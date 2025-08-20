@@ -1,0 +1,6 @@
+radio:
+  string: "/dev/usart_9"
+  handle: 9
+  baudrate_hz: 115200
+  ms_timeout: 250
+  debug: true
