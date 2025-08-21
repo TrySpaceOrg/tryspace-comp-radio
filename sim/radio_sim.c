@@ -1,266 +1,704 @@
 #include "radio_sim.h"
-#include "simulith_uart.h"
-#include <math.h>
-
-#ifndef STANDALONE_MODE
-#include "simulith_component.h"
-#endif
 
 // Global state pointer for callback access
 static radio_sim_state_t* g_state = NULL;
 
-// UART port struct for Simulith
-static uart_port_t g_uart_port = {0};
+// SPI and GPIO device structs for Simulith
+static transport_port_t g_spi_device = {0};
+static transport_port_t g_power_gpio_device = {0};
+static transport_port_t g_interrupt_gpio_device = {0};
+simulith_gpio_state_t gpio_power_state = {RADIO_CFG_GPIO_POWER_PIN, 1, 0};
+simulith_gpio_state_t gpio_interrupt_state = {RADIO_CFG_GPIO_INTERRUPT_PIN, 0, 0};
 
-static void send_housekeeping(radio_sim_state_t* state)
+/*
+** UDP Ground Thread - handles communication with ground software
+*/
+static void* udp_ground_thread(void* arg)
 {
-    if (!state) return;
-    uint8_t response[8];
-    response[0] = RADIO_DEVICE_HDR_0;
-    response[1] = RADIO_DEVICE_HDR_1;
-    response[2] = (state->hk.DeviceCounter >> 8) & 0xFF;
-    response[3] = state->hk.DeviceCounter & 0xFF;
-    response[4] = (state->hk.DeviceConfig >> 8) & 0xFF;
-    response[5] = state->hk.DeviceConfig & 0xFF;
-    response[6] = RADIO_DEVICE_TRAILER_0;
-    response[7] = RADIO_DEVICE_TRAILER_1;
-    simulith_uart_send(&g_uart_port, response, sizeof(response));
+    radio_sim_state_t* state = (radio_sim_state_t*)arg;
+    fd_set read_fds;
+    struct timeval timeout;
+    uint8_t buffer[1024];
+    ssize_t bytes_received;
+    struct sockaddr_in from_addr;
+    socklen_t from_len;
+    
+    printf("UDP ground thread started\n");
+    
+    while (state->udp_thread_running)
+    {
+        FD_ZERO(&read_fds);
+        FD_SET(state->udp_rx_socket, &read_fds);
+        
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 100000; // 100ms timeout
+        
+        int select_result = select(state->udp_rx_socket + 1, &read_fds, NULL, NULL, &timeout);
+        
+        if (select_result > 0 && FD_ISSET(state->udp_rx_socket, &read_fds))
+        {
+            from_len = sizeof(from_addr);
+            bytes_received = recvfrom(state->udp_rx_socket, buffer, sizeof(buffer), 0,
+                                     (struct sockaddr*)&from_addr, &from_len);
+            
+            if (bytes_received > 0)
+            {
+                printf("Received %zd bytes from ground station\n", bytes_received);
+                
+                // Write to RX buffer if radio is powered and in RX or DUPLEX mode
+                if (state->powered_on && 
+                    (state->config.Mode == RADIO_SIM_MODE_RX || state->config.Mode == RADIO_SIM_MODE_DUPLEX))
+                {
+                    pthread_mutex_lock(&state->buffer_mutex);
+                    radio_sim_write_to_rx_buffer(state, buffer, bytes_received);
+                    state->bytes_received += bytes_received;
+                    radio_sim_update_interrupt(state);
+                    pthread_mutex_unlock(&state->buffer_mutex);
+                }
+            }
+        }
+        else if (select_result < 0 && errno != EINTR)
+        {
+            printf("UDP select error: %s\n", strerror(errno));
+            break;
+        }
+    }
+    
+    printf("UDP ground thread exiting\n");
+    return NULL;
 }
 
-static void send_radio_data(radio_sim_state_t* state)
+/*
+** Update interrupt GPIO based on buffer status
+*/
+static void radio_sim_update_interrupt(radio_sim_state_t* state)
 {
-    if (!state) return;
-    uint8_t response[10];
-    response[0] = RADIO_DEVICE_HDR_0;
-    response[1] = RADIO_DEVICE_HDR_1;
-    response[2] = (state->data.Chan1 >> 8) & 0xFF;
-    response[3] = state->data.Chan1 & 0xFF;
-    response[4] = (state->data.Chan2 >> 8) & 0xFF;
-    response[5] = state->data.Chan2 & 0xFF;
-    response[6] = (state->data.Chan3 >> 8) & 0xFF;
-    response[7] = state->data.Chan3 & 0xFF;
-    response[8] = RADIO_DEVICE_TRAILER_0;
-    response[9] = RADIO_DEVICE_TRAILER_1;
-    simulith_uart_send(&g_uart_port, response, sizeof(response));
+    uint32_t rx_count = radio_sim_get_rx_buffer_count(state);
+    uint8_t should_assert = (rx_count >= RADIO_SIM_INTERRUPT_THRESHOLD) ? 1 : 0;
+    
+    if (state->interrupt_asserted != should_assert)
+    {
+        state->interrupt_asserted = should_assert;
+        gpio_interrupt_state.value = 1;
+       
+        if (should_assert)
+        {
+            printf("Interrupt asserted - RX buffer has %d bytes\n", rx_count);
+        }
+        else
+        {
+            printf("Interrupt deasserted - RX buffer has %d bytes\n", rx_count);
+        }
+    }
 }
 
-static void handle_command(radio_sim_state_t* state, const uint8_t* data, size_t length)
+/*
+** Get number of bytes in RX buffer
+*/
+static uint32_t radio_sim_get_rx_buffer_count(radio_sim_state_t* state)
 {
-    if (!state || !data || length < RADIO_DEVICE_CMD_SIZE) 
-    {  // Check for minimum command size
-        printf("Invalid command parameters: state=%p, data=%p, length=%zu\n", 
-               (void*)state, (const void*)data, length);
+    if (state->rx_buffer_head >= state->rx_buffer_tail)
+    {
+        return state->rx_buffer_head - state->rx_buffer_tail;
+    }
+    else
+    {
+        return (RADIO_SIM_RX_BUFFER_SIZE - state->rx_buffer_tail) + state->rx_buffer_head;
+    }
+}
+
+/*
+** Write data to RX buffer (circular buffer)
+*/
+static int radio_sim_write_to_rx_buffer(radio_sim_state_t* state, const uint8_t* data, uint32_t length)
+{
+    uint32_t available_space = RADIO_SIM_RX_BUFFER_SIZE - radio_sim_get_rx_buffer_count(state) - 1;
+    
+    if (length > available_space)
+    {
+        printf("RX buffer overflow - dropping %d bytes\n", length - available_space);
+        length = available_space;
+    }
+    
+    for (uint32_t i = 0; i < length; i++)
+    {
+        state->rx_buffer[state->rx_buffer_head] = data[i];
+        state->rx_buffer_head = (state->rx_buffer_head + 1) % RADIO_SIM_RX_BUFFER_SIZE;
+    }
+    
+    return length;
+}
+
+/*
+** Read data from RX buffer
+*/
+static int radio_sim_read_from_rx_buffer(radio_sim_state_t* state, uint8_t* data, uint32_t max_length)
+{
+    uint32_t available = radio_sim_get_rx_buffer_count(state);
+    uint32_t to_read = (max_length < available) ? max_length : available;
+    
+    for (uint32_t i = 0; i < to_read; i++)
+    {
+        data[i] = state->rx_buffer[state->rx_buffer_tail];
+        state->rx_buffer_tail = (state->rx_buffer_tail + 1) % RADIO_SIM_RX_BUFFER_SIZE;
+    }
+    
+    return to_read;
+}
+
+/*
+** Send response via SPI
+*/
+static void radio_sim_send_response(radio_sim_state_t* state, const uint8_t* data, uint32_t length)
+{
+    printf("Sending SPI response: length=%d, first 4 bytes: 0x%02X 0x%02X 0x%02X 0x%02X\n", 
+        length, data[0], data[1], data[2], data[3]);
+    simulith_transport_send(&g_spi_device, data, length);
+}
+
+/*
+** Send housekeeping response
+*/
+static void radio_sim_send_housekeeping(radio_sim_state_t* state)
+{
+    uint8_t response[RADIO_DEVICE_HK_SIZE];
+    
+    printf("Building HK response: powered_on=%d\n", state->powered_on);
+    
+    // Build housekeeping response
+    response[0] = RADIO_DEVICE_HDR;
+    response[1] = (state->hk.CommandCounter >> 8) & 0xFF;
+    response[2] = state->hk.CommandCounter & 0xFF;
+    response[3] = state->hk.Mode;
+    response[4] = state->hk.GroundLock;
+    response[5] = state->hk.RxSpeedSetting;
+    response[6] = state->hk.RxWavelengthSetting;
+    response[7] = state->hk.TxSpeedSetting;
+    response[8] = state->hk.TxWavelengthSetting;
+    
+    printf("HK header: 0x%02X, counter: %d\n", response[0], state->hk.CommandCounter);
+    
+    // Bytes in RX buffer (4 bytes)
+    uint32_t rx_count = radio_sim_get_rx_buffer_count(state);
+    response[9] = (rx_count >> 24) & 0xFF;
+    response[10] = (rx_count >> 16) & 0xFF;
+    response[11] = (rx_count >> 8) & 0xFF;
+    response[12] = rx_count & 0xFF;
+    
+    // Bytes received (4 bytes)
+    response[13] = (state->hk.BytesReceived >> 24) & 0xFF;
+    response[14] = (state->hk.BytesReceived >> 16) & 0xFF;
+    response[15] = (state->hk.BytesReceived >> 8) & 0xFF;
+    response[16] = state->hk.BytesReceived & 0xFF;
+    
+    // Bytes sent (4 bytes)
+    response[17] = (state->hk.BytesSent >> 24) & 0xFF;
+    response[18] = (state->hk.BytesSent >> 16) & 0xFF;
+    response[19] = (state->hk.BytesSent >> 8) & 0xFF;
+    response[20] = state->hk.BytesSent & 0xFF;
+    
+    // Trailer
+    response[21] = RADIO_DEVICE_TRAILER;
+    
+    printf("HK response built, size=%ld, trailer at [21]: 0x%02X\n", 
+           RADIO_DEVICE_HK_SIZE, response[21]);
+    
+    radio_sim_send_response(state, response, RADIO_DEVICE_HK_SIZE);
+}
+
+/*
+** Handle SPI command
+*/
+static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t* data, size_t length)
+{
+    printf("SPI Handler: Received %zu bytes, powered_on=%d\n", length, state->powered_on);
+    printf("SPI Data: ");
+    for (size_t i = 0; i < length && i < 10; i++) {
+        printf("0x%02X ", data[i]);
+    }
+    printf("\n");
+    
+    if (!state || !data || length < 4)  // Minimum: header(1) + cmd(1) + len(1) + trailer(1)
+    {
+        printf("Invalid SPI command parameters\n");
         return;
     }
     
-    uint16_t header  = ((uint16_t) data[0] << 8) | data[1];
-    uint16_t cmd_id  = ((uint16_t) data[2] << 8) | data[3];
-    uint16_t payload = ((uint16_t) data[4] << 8) | data[5];
-    uint16_t trailer = ((uint16_t) data[6] << 8) | data[7];
-
+    // Check if radio is powered on - if not, drop all commands silently
+    if (!state->powered_on)
+    {
+        printf("Radio not powered - dropping SPI command\n");
+        return;
+    }
+    
+    // Parse command
+    uint8_t header = data[0];
+    uint8_t command = data[1];
+    uint8_t payload_len = data[2];
+    
     // Validate header
-    if (header != RADIO_DEVICE_HDR) 
+    if (header != RADIO_DEVICE_HDR)
     {
-        printf("Invalid command header (0x%04X)\n", header);
+        printf("Invalid command header: 0x%02X\n", header);
         return;
     }
-
+    
+    // Validate length
+    if (length < (size_t) (6 + payload_len))  // header + cmd + len + payload + trailer
+    {
+        printf("Command length mismatch\n");
+        return;
+    }
+    
     // Validate trailer
-    if (trailer != RADIO_DEVICE_TRAILER) 
+    uint16_t trailer = (data[4 + payload_len] << 8) | data[5 + payload_len];
+    if (trailer != RADIO_DEVICE_TRAILER)
     {
-        printf("Invalid command trailer (0x%04X)\n", trailer);
+        printf("Invalid command trailer: 0x%04X\n", trailer);
         return;
     }
-
-    // Echo command back
-    printf("handle_command: Echo command back to UART: ID=%d, Payload=0x%08X\n", cmd_id, payload);
-    simulith_uart_send(&g_uart_port, data, length);
-
+    
+    printf("SPI Command: 0x%02X, Length: %d\n", command, payload_len);
+    
+    // Check if radio is powered
+    if (!state->powered_on && command != RADIO_DEVICE_NOOP_CMD)
+    {
+        printf("Radio not powered - ignoring command\n");
+        return;
+    }
+    
     // Process command
-    switch (cmd_id) 
+    switch (command)
     {
         case RADIO_DEVICE_NOOP_CMD:
             printf("Processing NOOP command\n");
-            // Just echo the command back, which was already done
             break;
-
+            
         case RADIO_DEVICE_REQ_HK_CMD:
-            printf("Processing GET_HK command\n");
-            send_housekeeping(state);
+            printf("Processing housekeeping request\n");
+            pthread_mutex_lock(&state->buffer_mutex);
+            state->hk.BytesInRxBuffer = radio_sim_get_rx_buffer_count(state);
+            state->hk.BytesReceived = state->bytes_received;
+            state->hk.BytesSent = state->bytes_sent;
+            pthread_mutex_unlock(&state->buffer_mutex);
+            radio_sim_send_housekeeping(state);
             break;
-
-        case RADIO_DEVICE_REQ_DATA_CMD:
-            printf("Processing GET_DATA command\n");
-            send_radio_data(state);
+            
+        case RADIO_DEVICE_SET_CFG_CMD:
+            if (payload_len == RADIO_CFG_PAYLOAD_SIZE)
+            {
+                printf("Processing configuration command\n");
+                state->config.Mode = data[3];
+                state->config.RxSpeedSetting = data[4];
+                state->config.RxWavelengthSetting = data[5];
+                state->config.TxSpeedSetting = data[6];
+                state->config.TxWavelengthSetting = data[7];
+                
+                // Update housekeeping
+                state->hk.Mode = state->config.Mode;
+                state->hk.RxSpeedSetting = state->config.RxSpeedSetting;
+                state->hk.RxWavelengthSetting = state->config.RxWavelengthSetting;
+                state->hk.TxSpeedSetting = state->config.TxSpeedSetting;
+                state->hk.TxWavelengthSetting = state->config.TxWavelengthSetting;
+                
+                printf("Mode: %d, RX: %d/%d, TX: %d/%d\n",
+                       state->config.Mode, state->config.RxSpeedSetting, state->config.RxWavelengthSetting,
+                       state->config.TxSpeedSetting, state->config.TxWavelengthSetting);
+            }
             break;
-
-        case RADIO_DEVICE_CFG_CMD:
-            printf("Processing SET_CONFIG command with payload 0x%08X\n", payload);
-            state->hk.DeviceConfig = payload;
+            
+        case RADIO_DEVICE_RECEIVE_CMD:
+            if (payload_len == RADIO_RECEIVE_PAYLOAD_SIZE)
+            {
+                uint8_t max_bytes = data[3];
+                printf("Processing receive command for %d bytes\n", max_bytes);
+                
+                pthread_mutex_lock(&state->buffer_mutex);
+                
+                // Read from RX buffer
+                uint8_t response[RADIO_MAX_PAYLOAD_SIZE + 4];
+                response[0] = RADIO_DEVICE_HDR;
+                response[1] = command;  // Echo command
+                
+                uint8_t actual_bytes = radio_sim_read_from_rx_buffer(state, &response[3], max_bytes);
+                response[2] = actual_bytes;  // Actual payload length
+                
+                // Add trailer
+                response[3 + actual_bytes] = RADIO_DEVICE_TRAILER;
+                
+                radio_sim_update_interrupt(state);
+                pthread_mutex_unlock(&state->buffer_mutex);
+                
+                radio_sim_send_response(state, response, 4 + actual_bytes);
+                printf("Sent %d bytes to client\n", actual_bytes);
+            }
             break;
-
+            
+        case RADIO_DEVICE_SEND_CMD:
+            printf("Processing send command with %d bytes\n", payload_len);
+            
+            // Send data to ground station if in TX or DUPLEX mode
+            if (state->config.Mode == RADIO_SIM_MODE_TX || state->config.Mode == RADIO_SIM_MODE_DUPLEX)
+            {
+                ssize_t sent = sendto(state->udp_tx_socket, &data[3], payload_len, 0,
+                                     (struct sockaddr*)&state->ground_tx_addr, sizeof(state->ground_tx_addr));
+                if (sent > 0)
+                {
+                    pthread_mutex_lock(&state->buffer_mutex);
+                    state->bytes_sent += sent;
+                    pthread_mutex_unlock(&state->buffer_mutex);
+                    printf("Sent %zd bytes to ground station\n", sent);
+                }
+                else
+                {
+                    printf("Failed to send to ground station: %s\n", strerror(errno));
+                }
+            }
+            else
+            {
+                printf("Radio not in TX mode - dropping data\n");
+            }
+            break;
+            
         default:
-            printf("Unknown command ID: %d\n", cmd_id);
+            printf("Unknown command: 0x%02X\n", command);
             break;
     }
-
+    
     // Increment command counter
-    state->hk.DeviceCounter++;
+    state->hk.CommandCounter++;
 }
 
+/*
+** Main tick function called by simulith
+*/
 static void radio_sim_on_tick(uint64_t tick_time_ns, const simulith_42_context_t* context_42)
 {
-    int bytes;
-    uint8_t data[256];
-
     if (!g_state) return;
+    
+    // Increment tick counter for rate limiting
+    g_state->tick_counter++;
     
     // Convert nanoseconds to seconds
     double current_time = tick_time_ns / 1e9;
     
-    // Update radio data at the specified rate
-    if (current_time - g_state->last_update_time >= (1.0 / RADIO_SIM_UPDATE_RATE_HZ)) 
+    // Update at specified rate
+    if (current_time - g_state->last_update_time >= (1.0 / RADIO_SIM_UPDATE_RATE_HZ))
     {
-        // If 42 context is available, populate channels with Sun Vector Body (SVB)
-        if (context_42 && context_42->valid) {
-            // Chan1: SVB X-component (scaled and offset for uint16)
-            // Scale by 10000 and add 32768 offset to handle negative values
-            g_state->data.Chan1 = (uint16_t)((context_42->sun_vector_body[0] * 10000.0) + 32768.0);
-            
-            // Chan2: SVB Y-component (scaled and offset for uint16)
-            g_state->data.Chan2 = (uint16_t)((context_42->sun_vector_body[1] * 10000.0) + 32768.0);
-            
-            // Chan3: SVB Z-component (scaled and offset for uint16)
-            g_state->data.Chan3 = (uint16_t)((context_42->sun_vector_body[2] * 10000.0) + 32768.0);
-            
-            // Optional: Print SVB data for debugging
-            //if (g_state->hk.DeviceCounter % 1000 == 0) { // Print every 1000 cycles
-            //    printf("42 SVB - Time: %.3f, Sun Vector Body: [%.6f, %.6f, %.6f], Channels: [%u, %u, %u]\n",
-            //           context_42->sim_time, 
-            //           context_42->sun_vector_body[0], context_42->sun_vector_body[1], context_42->sun_vector_body[2],
-            //           g_state->data.Chan1, g_state->data.Chan2, g_state->data.Chan3);
-            //}
-        } else {
-            // Fallback: Use command counter if no 42 context available
-            g_state->data.Chan1 = (uint16_t)(g_state->hk.DeviceCounter * 1);
-            g_state->data.Chan2 = (uint16_t)(g_state->hk.DeviceCounter * 2);
-            g_state->data.Chan3 = (uint16_t)(g_state->hk.DeviceCounter * 3);
-        }
-        
         g_state->last_update_time = current_time;
+        
+        // Update interrupt status
+        pthread_mutex_lock(&g_state->buffer_mutex);
+        radio_sim_update_interrupt(g_state);
+        pthread_mutex_unlock(&g_state->buffer_mutex);
+    }
+    
+    // Poll for SPI requests using Simulith transport
+    uint8_t spi_rx_buf[256];
+    int spi_bytes = simulith_transport_available(&g_spi_device);
+    if (spi_bytes > 0) 
+    {
+        spi_bytes = simulith_transport_receive(&g_spi_device, spi_rx_buf, sizeof(spi_rx_buf));
+        if (spi_bytes > 0) 
+        {
+            printf("Received %d bytes via SPI (Simulith transport)\n", spi_bytes);
+            if (g_state->powered_on) 
+            {
+                radio_sim_handle_spi_command(g_state, spi_rx_buf, spi_bytes);
+            } 
+            else 
+            {
+                printf("Radio powered off - dropping %d bytes from SPI\n", spi_bytes);
+            }
+        }
     }
 
-    // Process UART
-    bytes = simulith_uart_available(&g_uart_port);
-    if (bytes > 0)
+    // Service GPIO requests for power and interrupt pins every tick
+    // Power GPIO: check for incoming requests (read/write)
+    uint8_t gpio_rx_buf[8];
+    int gpio_bytes = simulith_transport_available((transport_port_t*)&g_power_gpio_device);
+    if (gpio_bytes > 0) 
     {
-        // Read UART
-        bytes = simulith_uart_receive(&g_uart_port, data, sizeof(data));
-
-        printf("Received %d bytes from UART\n", bytes);
-        for(int i = 0; i < bytes; i++) 
-        {
-            printf("%02X ", data[i]);
+        gpio_bytes = simulith_transport_receive((transport_port_t*)&g_power_gpio_device, gpio_rx_buf, sizeof(gpio_rx_buf));
+        // Simple protocol: [cmd, pin, value]
+        //   cmd: 0=read, 1=write
+        if (gpio_bytes >= 2) {
+            uint8_t cmd = gpio_rx_buf[0];
+            uint8_t pin = gpio_rx_buf[1];
+            if (pin == gpio_power_state.pin) 
+            {
+                if (cmd == 0) 
+                {   // read
+                    uint8_t resp[3] = {0, pin, gpio_power_state.value};
+                    simulith_transport_send((transport_port_t*)&g_power_gpio_device, resp, sizeof(resp));
+                } 
+                else if (cmd == 1 && gpio_bytes >= 3) 
+                {   // write
+                    uint8_t value = gpio_rx_buf[2];
+                    if (value != gpio_power_state.value) 
+                    {
+                        gpio_power_state.value = value;
+                        printf("Radio power %s (via GPIO write)\n", value ? "ON" : "OFF");
+                        if (!value) 
+                        {
+                            pthread_mutex_lock(&g_state->buffer_mutex);
+                            g_state->rx_buffer_head = 0;
+                            g_state->rx_buffer_tail = 0;
+                            g_state->tx_buffer_head = 0;
+                            g_state->tx_buffer_tail = 0;
+                            g_state->interrupt_asserted = 0;
+                            pthread_mutex_unlock(&g_state->buffer_mutex);
+                            gpio_interrupt_state.value = 0;
+                            memset(&g_state->config, 0, sizeof(g_state->config));
+                            g_state->hk.Mode = RADIO_SIM_MODE_SLEEP;
+                        }
+                    }
+                }
+            }
         }
-        printf("\n");
+    }
 
-        // Process the command
-        handle_command(g_state, data, bytes);
+    // Interrupt GPIO: check for incoming requests (read/write)
+    gpio_bytes = simulith_transport_available((transport_port_t*)&g_interrupt_gpio_device);
+    if (gpio_bytes > 0) {
+        gpio_bytes = simulith_transport_receive((transport_port_t*)&g_interrupt_gpio_device, gpio_rx_buf, sizeof(gpio_rx_buf));
+        if (gpio_bytes >= 2) 
+        {
+            uint8_t cmd = gpio_rx_buf[0];
+            uint8_t pin = gpio_rx_buf[1];
+            if (pin == gpio_interrupt_state.pin) 
+            {
+                if (cmd == 0) 
+                {   // read
+                    uint8_t resp[3] = {0, pin, gpio_interrupt_state.value};
+                    simulith_transport_send((transport_port_t*)&g_interrupt_gpio_device, resp, sizeof(resp));
+                } 
+                else if (cmd == 1 && gpio_bytes >= 3) 
+                {   // write
+                    uint8_t value = gpio_rx_buf[2];
+                    gpio_interrupt_state.value = value;
+                    printf("Interrupt GPIO set to %d (via GPIO write)\n", value);
+                }
+            }
+        }
     }
 }
 
+/*
+** Initialize radio simulator
+*/
 int radio_sim_init(radio_sim_state_t* state)
 {
     if (!state) return RADIO_SIM_ERROR;
-
+    
     // Initialize state
     memset(state, 0, sizeof(radio_sim_state_t));
-
+    
     // Set global state pointer
     g_state = state;
+    
+    // Initialize mutex
+    if (pthread_mutex_init(&state->buffer_mutex, NULL) != 0)
+    {
+        printf("Failed to initialize buffer mutex\n");
+        return RADIO_SIM_ERROR;
+    }
 
+    // Initialize device configuration
+    state->spi_bus = RADIO_CFG_SPI_BUS;
+    state->spi_cs = RADIO_CFG_SPI_CS;
+    
+    // Initialize SPI device (server/bind)
+    memset(&g_spi_device, 0, sizeof(g_spi_device));
+    snprintf(g_spi_device.name, sizeof(g_spi_device.name), "radio_sim_spi");
+    snprintf(g_spi_device.address, sizeof(g_spi_device.address), "ipc:///tmp/simulith_pub:%d", 
+         SIMULITH_SPI_BASE_PORT + (state->spi_bus * 8) + state->spi_cs);
+    g_spi_device.is_server = 1;
+    // No bus_id/cs_id fields in transport_port_t
+    if (simulith_transport_init(&g_spi_device) != SIMULITH_TRANSPORT_SUCCESS)
+    {
+    printf("Failed to initialize Simulith SPI transport\n");
 #ifdef STANDALONE_MODE
-    // In standalone mode, we initialize our own Simulith client
-    // Wait a second for the Simulith server to start up
-    sleep(1);
-
-    // Initialize Simulith client
-    if (simulith_client_init(LOCAL_PUB_ADDR, LOCAL_REP_ADDR, "tryspace-comp-radio-sim", INTERVAL_NS) != 0) 
-    {
-        printf("Failed to initialize Simulith client\n");
-        return RADIO_SIM_ERROR;
-    }
-
-    // Handshake with Simulith server
-    if (simulith_client_handshake() != 0) 
-    {
-        printf("Failed to handshake with Simulith server\n");
-        simulith_client_shutdown();
-        return RADIO_SIM_ERROR;
-    }
+    simulith_client_shutdown();
 #endif
-
-    // Initialize UART port struct for Simulith (server/bind)
-    memset(&g_uart_port, 0, sizeof(g_uart_port));
-    snprintf(g_uart_port.name, sizeof(g_uart_port.name), "radio_sim_uart");
-    snprintf(g_uart_port.address, sizeof(g_uart_port.address), "tcp://*:%d", SIMULITH_UART_BASE_PORT + RADIO_CFG_HANDLE);
-    g_uart_port.is_server = 1; // Always server/bind for the simulator
-
-    int uart_result = simulith_uart_init(&g_uart_port);
-    if (uart_result < 0) 
+    pthread_mutex_destroy(&state->buffer_mutex);
+    return RADIO_SIM_ERROR;
+    }
+    
+    // Initialize power GPIO
+    memset(&g_power_gpio_device, 0, sizeof(g_power_gpio_device));
+    snprintf(g_power_gpio_device.name, sizeof(g_power_gpio_device.name), "radio_sim_power_gpio");
+    snprintf(g_power_gpio_device.address, sizeof(g_power_gpio_device.address), "ipc:///tmp/simulith_pub:%d",
+             SIMULITH_GPIO_BASE_PORT + RADIO_CFG_GPIO_POWER_PIN);
+    g_power_gpio_device.is_server = 1;
+    gpio_power_state.pin = RADIO_CFG_GPIO_POWER_PIN;
+    gpio_power_state.direction = GPIO_INPUT;  // Radio reads power state
+    if (simulith_transport_init(&g_power_gpio_device) < 0)
     {
-        printf("Failed to initialize Simulith UART server\n");
-#ifdef STANDALONE_MODE
-        simulith_client_shutdown();
-#endif
+        printf("Failed to initialize Simulith power GPIO server\n");
+        simulith_transport_close(&g_spi_device);
+        pthread_mutex_destroy(&state->buffer_mutex);
         return RADIO_SIM_ERROR;
     }
-
+    
+    // Initialize interrupt GPIO
+    memset(&g_interrupt_gpio_device, 0, sizeof(g_interrupt_gpio_device));
+    snprintf(g_interrupt_gpio_device.name, sizeof(g_interrupt_gpio_device.name), "radio_sim_interrupt_gpio");
+    snprintf(g_interrupt_gpio_device.address, sizeof(g_interrupt_gpio_device.address), "ipc:///tmp/simulith_pub:%d",
+             SIMULITH_GPIO_BASE_PORT + RADIO_CFG_GPIO_INTERRUPT_PIN);
+    g_interrupt_gpio_device.is_server = 1;
+    gpio_interrupt_state.pin = RADIO_CFG_GPIO_INTERRUPT_PIN;
+    gpio_interrupt_state.direction = GPIO_OUTPUT;  // Radio controls interrupt signal
+    if (simulith_transport_init(&g_interrupt_gpio_device) < 0)
+    {
+        printf("Failed to initialize Simulith interrupt GPIO server\n");
+        simulith_transport_close(&g_power_gpio_device);
+        simulith_transport_close(&g_spi_device);
+        pthread_mutex_destroy(&state->buffer_mutex);
+        return RADIO_SIM_ERROR;
+    }
+    
+    // Initialize UDP sockets for ground communication
+    state->udp_rx_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (state->udp_rx_socket < 0)
+    {
+        printf("Failed to create UDP RX socket: %s\n", strerror(errno));
+        simulith_transport_close(&g_interrupt_gpio_device);
+        simulith_transport_close(&g_power_gpio_device);
+        simulith_transport_close(&g_spi_device);
+        pthread_mutex_destroy(&state->buffer_mutex);
+        return RADIO_SIM_ERROR;
+    }
+    
+    state->udp_tx_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (state->udp_tx_socket < 0)
+    {
+        printf("Failed to create UDP TX socket: %s\n", strerror(errno));
+        close(state->udp_rx_socket);
+        simulith_transport_close(&g_interrupt_gpio_device);
+        simulith_transport_close(&g_power_gpio_device);
+        simulith_transport_close(&g_spi_device);
+        pthread_mutex_destroy(&state->buffer_mutex);
+        return RADIO_SIM_ERROR;
+    }
+    
+    // Configure UDP addresses
+    memset(&state->ground_rx_addr, 0, sizeof(state->ground_rx_addr));
+    state->ground_rx_addr.sin_family = AF_INET;
+    state->ground_rx_addr.sin_addr.s_addr = INADDR_ANY;
+    state->ground_rx_addr.sin_port = htons(RADIO_CFG_UDP_GROUND_RX_PORT);
+    
+    memset(&state->ground_tx_addr, 0, sizeof(state->ground_tx_addr));
+    state->ground_tx_addr.sin_family = AF_INET;
+    state->ground_tx_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    state->ground_tx_addr.sin_port = htons(RADIO_CFG_UDP_GROUND_TX_PORT);
+    
+    // Bind RX socket
+    if (bind(state->udp_rx_socket, (struct sockaddr*)&state->ground_rx_addr, sizeof(state->ground_rx_addr)) < 0)
+    {
+        printf("Failed to bind UDP RX socket: %s\n", strerror(errno));
+        close(state->udp_tx_socket);
+        close(state->udp_rx_socket);
+        simulith_transport_close(&g_interrupt_gpio_device);
+        simulith_transport_close(&g_power_gpio_device);
+        simulith_transport_close(&g_spi_device);
+        pthread_mutex_destroy(&state->buffer_mutex);
+        return RADIO_SIM_ERROR;
+    }
+    
     // Initialize time provider
     state->time_handle = simulith_time_init();
-    if (!state->time_handle) 
+    if (!state->time_handle)
     {
         printf("Failed to initialize time provider\n");
-        simulith_uart_close(&g_uart_port);
-#ifdef STANDALONE_MODE
-        simulith_client_shutdown();
-#endif
+        close(state->udp_tx_socket);
+        close(state->udp_rx_socket);
+        simulith_transport_close(&g_interrupt_gpio_device);
+        simulith_transport_close(&g_power_gpio_device);
+        simulith_transport_close(&g_spi_device);
+        pthread_mutex_destroy(&state->buffer_mutex);
         return RADIO_SIM_ERROR;
     }
-
+    
     // Initialize default values
-    state->hk.DeviceCounter = 0;
-    state->hk.DeviceConfig = 0;
-    state->data.Chan1 = 0;
-    state->data.Chan2 = 0;
-    state->data.Chan3 = 0;
+    state->hk.CommandCounter = 0;
+    state->hk.Mode = RADIO_SIM_MODE_SLEEP;
+    state->hk.GroundLock = 0;
+    state->powered_on = 0;
+    state->interrupt_asserted = 0;
     state->last_update_time = simulith_time_get(state->time_handle);
-
-    printf("Radio simulator initialized successfully as UART server on %s\n", g_uart_port.address);
+    
+    // Start UDP ground thread
+    state->udp_thread_running = 1;
+    if (pthread_create(&state->udp_thread, NULL, udp_ground_thread, state) != 0)
+    {
+        printf("Failed to create UDP ground thread\n");
+        simulith_time_cleanup(state->time_handle);
+        close(state->udp_tx_socket);
+        close(state->udp_rx_socket);
+        simulith_transport_close(&g_interrupt_gpio_device);
+        simulith_transport_close(&g_power_gpio_device);
+        simulith_transport_close(&g_spi_device);
+        pthread_mutex_destroy(&state->buffer_mutex);
+        return RADIO_SIM_ERROR;
+    }
+    
+    printf("Radio simulator initialized successfully\n");
+    printf("  SPI: %s\n", g_spi_device.address);
+    printf("  Power GPIO: %s\n", g_power_gpio_device.address);
+    printf("  Interrupt GPIO: %s\n", g_interrupt_gpio_device.address);
+    printf("  UDP RX: port %d\n", RADIO_CFG_UDP_GROUND_RX_PORT);
+    printf("  UDP TX: port %d\n", RADIO_CFG_UDP_GROUND_TX_PORT);
     printf("Waiting for commands...\n");
+    
     return RADIO_SIM_SUCCESS;
 }
 
+/*
+** Cleanup radio simulator
+*/
 void radio_sim_cleanup(radio_sim_state_t* state)
 {
     if (!state) return;
-
-    g_state = NULL;  // Clear global state pointer
-    simulith_uart_close(&g_uart_port);
-
-    if (state->time_handle) 
+    
+    // Stop UDP thread
+    if (state->udp_thread_running)
+    {
+        state->udp_thread_running = 0;
+        pthread_join(state->udp_thread, NULL);
+    }
+    
+    // Cleanup resources
+    g_state = NULL;
+    
+    if (state->time_handle)
     {
         simulith_time_cleanup(state->time_handle);
         state->time_handle = NULL;
     }
     
+    if (state->udp_rx_socket >= 0)
+    {
+        close(state->udp_rx_socket);
+        state->udp_rx_socket = -1;
+    }
+    
+    if (state->udp_tx_socket >= 0)
+    {
+        close(state->udp_tx_socket);
+        state->udp_tx_socket = -1;
+    }
+    
+    simulith_transport_close(&g_interrupt_gpio_device);
+    simulith_transport_close(&g_power_gpio_device);
+    simulith_transport_close(&g_spi_device);
+    
+    pthread_mutex_destroy(&state->buffer_mutex);
+    
 #ifdef STANDALONE_MODE
     simulith_client_shutdown();
 #endif
 }
-
-// Component interface implementation (used when loaded as shared library)
-#ifndef STANDALONE_MODE
 
 static int radio_sim_component_init(component_state_t** state)
 {
@@ -307,7 +745,7 @@ static void radio_sim_component_cleanup(component_state_t* state)
 
 static const component_interface_t radio_sim_interface = {
     .name = "radio_sim",
-    .description = "Radio simulation component for testing",
+    .description = "Radio simulation component with SPI/GPIO and UDP ground interface",
     .init = radio_sim_component_init,
     .tick = radio_sim_component_tick,
     .cleanup = radio_sim_component_cleanup,
@@ -326,34 +764,3 @@ const component_interface_t* get_component_interface(void)
 {
     return &radio_sim_interface;
 }
-
-#endif // !STANDALONE_MODE
-
-// Standalone mode main function
-#ifdef STANDALONE_MODE
-
-// Wrapper function for standalone mode (no 42 context available)
-static void radio_sim_standalone_tick(uint64_t tick_time_ns)
-{
-    radio_sim_on_tick(tick_time_ns, NULL); // Pass NULL for 42 context in standalone mode
-}
-
-int main(int argc, char* argv[])
-{
-    radio_sim_state_t state;
-    
-    if (radio_sim_init(&state) != RADIO_SIM_SUCCESS) 
-    {
-        printf("Failed to initialize radio simulator\n");
-        return 1;
-    }
-    
-    printf("Sample simulator running. Press Ctrl+C to exit.\n");
-    
-    // Run the client loop with our standalone tick callback
-    simulith_client_run_loop(radio_sim_standalone_tick);
-    
-    radio_sim_cleanup(&state);
-    return 0;
-}
-#endif // STANDALONE_MODE 

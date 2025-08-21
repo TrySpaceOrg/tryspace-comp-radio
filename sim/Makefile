@@ -1,5 +1,5 @@
 # Makefile for TrySpace radio component SIM development
-.PHONY: all build build-fsw clean debug
+.PHONY: all build build-sim clean debug
 
 export BUILDDIR ?= $(CURDIR)/build
 export BUILD_IMAGE ?= tryspaceorg/tryspace-lab:0.0.0

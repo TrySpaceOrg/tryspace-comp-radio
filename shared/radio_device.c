@@ -1,227 +1,342 @@
 #include "radio_device.h"
 
 /*
-** Generic read data from device
+** Generic initialize radio device (SPI + GPIO)
 */
-int32_t RADIO_ReadData(uart_info_t *device, uint8_t *read_data, uint8_t data_length)
+int32_t RADIO_InitDevice(spi_info_t *spi_device, gpio_info_t *power_gpio, gpio_info_t *interrupt_gpio)
 {
-    int32_t status             = OS_SUCCESS;
-    int32_t bytes              = 0;
-    int32_t bytes_available    = 0;
-    uint8_t ms_timeout_counter = 0;
-
-    /* Wait until all data received or timeout occurs */
-    bytes_available = uart_bytes_available(device);
-    while ((bytes_available < data_length) && (ms_timeout_counter < RADIO_CFG_MS_TIMEOUT))
+    int32_t status = OS_SUCCESS;
+    
+    /* Initialize SPI device */
+    if (spi_device != NULL)
     {
-        ms_timeout_counter++;
-        OS_TaskDelay(1);
-        bytes_available = uart_bytes_available(device);
-    }
-
-    if (ms_timeout_counter < RADIO_CFG_MS_TIMEOUT)
-    {
-        /* Limit bytes available */
-        if (bytes_available > data_length)
+        status = spi_init_dev(spi_device);
+        if (status != SPI_SUCCESS)
         {
-            bytes_available = data_length;
+            OS_printf("RADIO_InitDevice: SPI initialization failed with error %d\n", status);
+            return OS_ERROR;
         }
-
-        /* Read data */
-        bytes = uart_read_port(device, read_data, bytes_available);
-        if (bytes != bytes_available)
-        {
-            OS_printf("  RADIO_ReadData: Bytes read != to requested! \n");
-            status = OS_ERROR;
-        } /* uart_read */
     }
-    else
+    
+    /* Initialize power GPIO */
+    if (power_gpio != NULL)
     {
-        status = OS_ERROR;
-    } /* ms_timeout_counter */
-
-    return status;
+        status = gpio_init(power_gpio);
+        if (status != GPIO_SUCCESS)
+        {
+            OS_printf("RADIO_InitDevice: Power GPIO initialization failed with error %d\n", status);
+            return OS_ERROR;
+        }
+    }
+    
+    /* Initialize interrupt GPIO */
+    if (interrupt_gpio != NULL)
+    {
+        status = gpio_init(interrupt_gpio);
+        if (status != GPIO_SUCCESS)
+        {
+            OS_printf("RADIO_InitDevice: Interrupt GPIO initialization failed with error %d\n", status);
+            return OS_ERROR;
+        }
+    }
+    
+    return OS_SUCCESS;
 }
 
 /*
-** Generic command to device
-** Note that confirming the echoed response is specific to this implementation
+** Power on radio device
 */
-int32_t RADIO_CommandDevice(uart_info_t *device, uint16_t cmd_code, uint16_t payload)
+int32_t RADIO_PowerOn(gpio_info_t *power_gpio)
+{
+    if (power_gpio == NULL)
+    {
+        return OS_ERROR;
+    }
+    
+    int32_t status = gpio_write(power_gpio, 1); /* Active high */
+    if (status != GPIO_SUCCESS)
+    {
+        OS_printf("RADIO_PowerOn: Failed to set power GPIO high\n");
+        return OS_ERROR;
+    }
+    
+    /* Small delay for power stabilization */
+    OS_TaskDelay(10);
+    
+    return OS_SUCCESS;
+}
+
+/*
+** Power off radio device
+*/
+int32_t RADIO_PowerOff(gpio_info_t *power_gpio)
+{
+    if (power_gpio == NULL)
+    {
+        return OS_ERROR;
+    }
+    
+    int32_t status = gpio_write(power_gpio, 0); /* Active high, so 0 = off */
+    if (status != GPIO_SUCCESS)
+    {
+        OS_printf("RADIO_PowerOff: Failed to set power GPIO low\n");
+        return OS_ERROR;
+    }
+    
+    return OS_SUCCESS;
+}
+
+/*
+** Check interrupt status
+*/
+int32_t RADIO_CheckInterrupt(gpio_info_t *interrupt_gpio, uint8_t *interrupt_status)
+{
+    if (interrupt_gpio == NULL || interrupt_status == NULL)
+    {
+        return OS_ERROR;
+    }
+    
+    int32_t status = gpio_read(interrupt_gpio, interrupt_status);
+    if (status != GPIO_SUCCESS)
+    {
+        OS_printf("RADIO_CheckInterrupt: Failed to read interrupt GPIO\n");
+        return OS_ERROR;
+    }
+    
+    return OS_SUCCESS;
+}
+
+/*
+** Generic command to device via SPI
+*/
+int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint8_t payload_len, uint8_t *payload)
 {
     int32_t status = OS_SUCCESS;
-    int32_t bytes  = 0;
-    uint8_t write_data[RADIO_DEVICE_CMD_SIZE];
-    uint8_t read_data[RADIO_DEVICE_DATA_SIZE];
-
-    /* Prepare command */
-    write_data[0] = RADIO_DEVICE_HDR_0;
-    write_data[1] = RADIO_DEVICE_HDR_1;
-    write_data[2] = cmd_code >> 8;
-    write_data[3] = cmd_code;
-    write_data[4] = payload >> 8;
-    write_data[5] = payload;
-    write_data[6] = RADIO_DEVICE_TRAILER_0;
-    write_data[7] = RADIO_DEVICE_TRAILER_1;
-
-    /* Flush any prior data */
-    status = uart_flush(device);
-    if (status == UART_SUCCESS)
+    uint8_t tx_buffer[RADIO_MAX_PAYLOAD_SIZE + 5]; /* Header + cmd + len + payload + trailer */
+    uint8_t rx_buffer[RADIO_MAX_PAYLOAD_SIZE + 5];
+    uint32_t total_len;
+    
+    if (device == NULL)
     {
-        /* Write data */
-        bytes = uart_write_port(device, write_data, RADIO_DEVICE_CMD_SIZE);
-        #ifdef RADIO_CFG_DEBUG
-            OS_printf("  RADIO_CommandDevice[%d] = ", bytes);
-            for (uint32_t i = 0; i < RADIO_DEVICE_CMD_SIZE; i++)
-            {
-                OS_printf("%02x", write_data[i]);
-            }
-            OS_printf("\n");
-        #endif
-        if (bytes == RADIO_DEVICE_CMD_SIZE)
-        {
-            status = RADIO_ReadData(device, read_data, RADIO_DEVICE_CMD_SIZE);
-            if (status == OS_SUCCESS)
-            {
-                /* Confirm echoed response */
-                bytes = 0;
-                while ((bytes < (int32_t)RADIO_DEVICE_CMD_SIZE) && (status == OS_SUCCESS))
-                {
-                    if (read_data[bytes] != write_data[bytes])
-                    {
-                        status = OS_ERROR;
-                    }
-                    bytes++;
-                }
-            } /* RADIO_ReadData */
-            else
-            {
-                #ifdef RADIO_CFG_DEBUG
-                    OS_printf("RADIO_CommandDevice - RADIO_ReadData returned %d \n", status);
-                #endif
-            }
-        }
-        else
-        {
-            #ifdef RADIO_CFG_DEBUG
-                OS_printf("RADIO_CommandDevice - uart_write_port returned %d, expected %d \n", bytes, RADIO_DEVICE_CMD_SIZE);
-            #endif
-        } /* uart_write */
-    } /* uart_flush*/
-    else
-    {
-        OS_printf("RADIO_CommandDevice - uart_flush returned error %d \n", status);
+        return OS_ERROR;
     }
-    return status;
+    
+    /* Build command packet */
+    tx_buffer[0] = RADIO_DEVICE_HDR;          /* Header byte */
+    tx_buffer[1] = cmd;                       /* Command */
+    tx_buffer[2] = payload_len;               /* Payload length */
+    
+    /* Copy payload if provided */
+    if (payload_len > 0 && payload != NULL)
+    {
+        memcpy(&tx_buffer[3], payload, payload_len);
+    }
+    
+    /* Add trailer */
+    tx_buffer[3 + payload_len] = RADIO_DEVICE_TRAILER;  /* Trailer byte */
+    
+    total_len = 4 + payload_len; /* Header(1) + cmd(1) + len(1) + payload + trailer(1) */
+    
+    #ifdef RADIO_CFG_DEBUG
+        OS_printf("RADIO_CommandDevice[%d] = ", total_len);
+        for (uint32_t i = 0; i < total_len; i++)
+        {
+            OS_printf("%02x", tx_buffer[i]);
+        }
+        OS_printf("\n");
+    #endif
+    
+    /* Perform SPI transaction */
+    status = spi_transaction(device, tx_buffer, rx_buffer, total_len, 0, 8, 1);
+    if (status != SPI_SUCCESS)
+    {
+        OS_printf("RADIO_CommandDevice: SPI transaction failed with error %d\n", status);
+        return OS_ERROR;
+    }
+    
+    return OS_SUCCESS;
 }
 
 /*
 ** Request housekeeping command
 */
-int32_t RADIO_RequestHK(uart_info_t *device, RADIO_Device_HK_tlm_t *data)
+int32_t RADIO_RequestHK(spi_info_t *device, RADIO_Device_HK_tlm_t *data)
 {
     int32_t status = OS_SUCCESS;
-    uint8_t read_data[RADIO_DEVICE_HK_SIZE];
-
-    /* Command device to send HK */
-    status = RADIO_CommandDevice(device, RADIO_DEVICE_REQ_HK_CMD, 0);
-    if (status == OS_SUCCESS)
+    uint8_t rx_buffer[RADIO_DEVICE_HK_SIZE];
+    uint8_t tx_buffer[6]; /* Header + cmd + len + trailer */
+    
+    if (device == NULL || data == NULL)
     {
-        /* Read HK data */
-        status = RADIO_ReadData(device, read_data, sizeof(read_data));
-        if (status == OS_SUCCESS)
+        return OS_ERROR;
+    }
+    
+    /* Send HK request command */
+    status = RADIO_CommandDevice(device, RADIO_DEVICE_REQ_HK_CMD, 0, NULL);
+    if (status != OS_SUCCESS)
+    {
+        OS_printf("RADIO_RequestHK: Command failed with error %d\n", status);
+        return status;
+    }
+    
+    /* Wait briefly for response */
+    OS_TaskDelay(10);
+    
+    /* Read HK response */
+    memset(tx_buffer, 0, sizeof(tx_buffer));
+    status = spi_transaction(device, tx_buffer, rx_buffer, RADIO_DEVICE_HK_SIZE, 0, 8, 1);
+    if (status != SPI_SUCCESS)
+    {
+        OS_printf("RADIO_RequestHK: SPI read failed with error %d\n", status);
+        return OS_ERROR;
+    }
+    
+    #ifdef RADIO_CFG_DEBUG
+        OS_printf("RADIO_RequestHK response = ");
+        for (uint32_t i = 0; i < RADIO_DEVICE_HK_SIZE; i++)
         {
-            #ifdef RADIO_CFG_DEBUG
-                OS_printf("  RADIO_RequestHK = ");
-                for (uint32_t i = 0; i < sizeof(read_data); i++)
-                {
-                    OS_printf("%02x", read_data[i]);
-                }
-                OS_printf("\n");
-            #endif
-
-            /* Verify data header and trailer */
-            if ((read_data[0] == RADIO_DEVICE_HDR_0) && (read_data[1] == RADIO_DEVICE_HDR_1) &&
-                (read_data[6] == RADIO_DEVICE_TRAILER_0) && (read_data[7] == RADIO_DEVICE_TRAILER_1))
-            {
-                data->DeviceCounter |= read_data[2] << 8;
-                data->DeviceCounter |= read_data[3];
-                data->DeviceConfig  |= read_data[4] << 8;
-                data->DeviceConfig  |= read_data[5];
-                #ifdef RADIO_CFG_DEBUG
-                    OS_printf("  Header  = 0x%02x%02x  \n", read_data[0], read_data[1]);
-                    OS_printf("  Counter = 0x%04x      \n", data->DeviceCounter);
-                    OS_printf("  Config  = 0x%04x      \n", data->DeviceConfig);
-                    OS_printf("  Trailer = 0x%02x%02x  \n", read_data[6], read_data[7]);
-                #endif
-            }
-            else
-            {
-                OS_printf("  RADIO_RequestHK: RADIO_ReadData reported error %d \n", status);
-                status = OS_ERROR;
-            }
-        } /* RADIO_ReadData */
-    }
-    else
+            OS_printf("%02x", rx_buffer[i]);
+        }
+        OS_printf("\n");
+    #endif
+    
+    /* Verify response header and trailer */
+    if ((rx_buffer[0] != RADIO_DEVICE_HDR) ||
+        (rx_buffer[RADIO_DEVICE_HK_SIZE-1] != RADIO_DEVICE_TRAILER))
     {
-        OS_printf("  RADIO_RequestHK: RADIO_CommandDevice reported error %d \n", status);
+        OS_printf("RADIO_RequestHK: Invalid response header/trailer\n");
+        return OS_ERROR;
     }
-    return status;
+    
+    /* Parse housekeeping data */
+    data->CommandCounter = (rx_buffer[1] << 8) | rx_buffer[2];
+    data->Mode = rx_buffer[3];
+    data->GroundLock = rx_buffer[4];
+    data->RxSpeedSetting = rx_buffer[5];
+    data->RxWavelengthSetting = rx_buffer[6];
+    data->TxSpeedSetting = rx_buffer[7];
+    data->TxWavelengthSetting = rx_buffer[8];
+    data->BytesInRxBuffer = (rx_buffer[9] << 24) | (rx_buffer[10] << 16) | (rx_buffer[11] << 8) | rx_buffer[12];
+    data->BytesReceived = (rx_buffer[13] << 24) | (rx_buffer[14] << 16) | (rx_buffer[15] << 8) | rx_buffer[16];
+    data->BytesSent = (rx_buffer[17] << 24) | (rx_buffer[18] << 16) | (rx_buffer[19] << 8) | rx_buffer[20];
+    
+    #ifdef RADIO_CFG_DEBUG
+        OS_printf("  CommandCounter    = %d\n", data->CommandCounter);
+        OS_printf("  Mode              = %d\n", data->Mode);
+        OS_printf("  GroundLock        = %d\n", data->GroundLock);
+        OS_printf("  BytesInRxBuffer   = %d\n", data->BytesInRxBuffer);
+        OS_printf("  BytesReceived     = %d\n", data->BytesReceived);
+        OS_printf("  BytesSent         = %d\n", data->BytesSent);
+    #endif
+    
+    return OS_SUCCESS;
 }
 
 /*
-** Request data command
+** Set configuration command
 */
-int32_t RADIO_RequestData(uart_info_t *device, RADIO_Device_Data_tlm_t *data)
+int32_t RADIO_SetConfiguration(spi_info_t *device, RADIO_Device_Config_t *config)
+{
+    uint8_t payload[RADIO_CFG_PAYLOAD_SIZE];
+    
+    if (device == NULL || config == NULL)
+    {
+        return OS_ERROR;
+    }
+    
+    /* Build configuration payload */
+    payload[0] = config->Mode;
+    payload[1] = config->RxSpeedSetting;
+    payload[2] = config->RxWavelengthSetting;
+    payload[3] = config->TxSpeedSetting;
+    payload[4] = config->TxWavelengthSetting;
+    
+    /* Send configuration command */
+    return RADIO_CommandDevice(device, RADIO_DEVICE_SET_CFG_CMD, RADIO_CFG_PAYLOAD_SIZE, payload);
+}
+
+/*
+** Send data command
+*/
+int32_t RADIO_SendData(spi_info_t *device, uint8_t *data, uint8_t data_length)
+{
+    if (device == NULL || data == NULL)
+    {
+        return OS_ERROR;
+    }
+    
+    /* Send data command with data as payload */
+    return RADIO_CommandDevice(device, RADIO_DEVICE_SEND_CMD, data_length, data);
+}
+
+/*
+** Receive data command
+*/
+int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint8_t max_length, uint8_t *actual_length)
 {
     int32_t status = OS_SUCCESS;
-    uint8_t read_data[RADIO_DEVICE_DATA_SIZE];
-
-    /* Command device to send HK */
-    status = RADIO_CommandDevice(device, RADIO_DEVICE_REQ_DATA_CMD, 0);
-    if (status == OS_SUCCESS)
+    uint8_t payload[RADIO_RECEIVE_PAYLOAD_SIZE];
+    uint8_t rx_buffer[RADIO_MAX_PAYLOAD_SIZE + 6]; /* Max response size */
+    uint8_t tx_buffer[6];
+    uint8_t response_len;
+    
+    if (device == NULL || data == NULL || actual_length == NULL)
     {
-        /* Read HK data */
-        status = RADIO_ReadData(device, read_data, sizeof(read_data));
-        if (status == OS_SUCCESS)
+        return OS_ERROR;
+    }
+    
+    /* Build receive request payload (number of bytes to receive) */
+    payload[0] = max_length;
+    
+    /* Send receive command */
+    status = RADIO_CommandDevice(device, RADIO_DEVICE_RECEIVE_CMD, RADIO_RECEIVE_PAYLOAD_SIZE, payload);
+    if (status != OS_SUCCESS)
+    {
+        return status;
+    }
+    
+    /* Wait briefly for response */
+    OS_TaskDelay(10);
+    
+    /* Read response - first read to get header and length */
+    memset(tx_buffer, 0, sizeof(tx_buffer));
+    status = spi_transaction(device, tx_buffer, rx_buffer, 6, 0, 8, 1); /* Read header + cmd + len + 2 bytes data + trailer start */
+    if (status != SPI_SUCCESS)
+    {
+        OS_printf("RADIO_ReceiveData: SPI read failed with error %d\n", status);
+        return OS_ERROR;
+    }
+    
+    /* Verify header */
+    if (rx_buffer[0] != RADIO_DEVICE_HDR)
+    {
+        OS_printf("RADIO_ReceiveData: Invalid response header\n");
+        return OS_ERROR;
+    }
+    
+    /* Get payload length from response */
+    response_len = rx_buffer[2];
+    if (response_len > max_length)
+    {
+        OS_printf("RADIO_ReceiveData: Response too large (%d > %d)\n", response_len, max_length);
+        return OS_ERROR;
+    }
+    
+    /* Read remaining data if needed */
+    if (response_len > 1) /* Already read 1 byte of data */
+    {
+        memset(tx_buffer, 0, sizeof(tx_buffer));
+        status = spi_transaction(device, tx_buffer, &rx_buffer[4], response_len - 1 + 1, 0, 8, 1); /* Remaining data + trailer */
+        if (status != SPI_SUCCESS)
         {
-            #ifdef RADIO_CFG_DEBUG
-                OS_printf("  RADIO_RequestData = ");
-                for (uint32_t i = 0; i < sizeof(read_data); i++)
-                {
-                    OS_printf("%02x", read_data[i]);
-                }
-                OS_printf("\n");
-            #endif
-
-            /* Verify data header and trailer */
-            if ((read_data[0] == RADIO_DEVICE_HDR_0) && (read_data[1] == RADIO_DEVICE_HDR_1) &&
-                (read_data[8] == RADIO_DEVICE_TRAILER_0) && (read_data[9] == RADIO_DEVICE_TRAILER_1))
-            {
-                data->Chan1 = read_data[2] << 8;
-                data->Chan1 |= read_data[3];
-                data->Chan2 = read_data[4] << 8;
-                data->Chan2 |= read_data[5];
-                data->Chan3 = read_data[6] << 8;
-                data->Chan3 |= read_data[7];
-                #ifdef RADIO_CFG_DEBUG
-                    OS_printf("  Header  = 0x%02x%02x  \n", read_data[0], read_data[1]);
-                    OS_printf("  Chan1   = 0x%04x, %d  \n", data->Chan1, data->Chan1);
-                    OS_printf("  Chan2   = 0x%04x, %d  \n", data->Chan2, data->Chan2);
-                    OS_printf("  Chan3   = 0x%04x, %d  \n", data->Chan3, data->Chan3);
-                    OS_printf("  Trailer = 0x%02x%02x  \n", read_data[8], read_data[9]);
-                #endif
-            }
+            OS_printf("RADIO_ReceiveData: SPI read remaining failed with error %d\n", status);
+            return OS_ERROR;
         }
-        else
-        {
-            OS_printf("  RADIO_RequestData: Invalid data read! \n");
-            status = OS_ERROR;
-        } /* RADIO_ReadData */
     }
-    else
-    {
-        OS_printf("  RADIO_RequestData: RADIO_CommandDevice reported error %d \n", status);
-    }
-    return status;
+    
+    /* Copy received data */
+    memcpy(data, &rx_buffer[3], response_len);
+    *actual_length = response_len;
+    
+    return OS_SUCCESS;
 }

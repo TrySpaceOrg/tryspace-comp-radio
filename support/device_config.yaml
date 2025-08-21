@@ -1,6 +1,11 @@
 radio:
-  string: "/dev/usart_9"
-  handle: 9
-  baudrate_hz: 115200
+  spi_bus: 1
+  spi_cs: 0
+  gpio_power_pin: 10
+  gpio_interrupt_pin: 11
+  udp_ground_rx_port: 12345
+  udp_ground_tx_port: 12346
+  buffer_size: 65536
+  interrupt_threshold: 32768
   ms_timeout: 250
   debug: true

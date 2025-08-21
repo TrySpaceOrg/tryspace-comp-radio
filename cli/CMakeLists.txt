@@ -14,8 +14,8 @@ if(${TGTNAME} STREQUAL cpu1)
   
   # Find Simulith headers
   set(SIMULITH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../simulith" CACHE PATH "Path to Simulith directory")
-  if(NOT EXISTS "${SIMULITH_DIR}/include/simulith_uart.h")
-      message(FATAL_ERROR "Could not find simulith_uart.h in ${SIMULITH_DIR}/include. Please set SIMULITH_DIR to the correct path.")
+  if(NOT EXISTS "${SIMULITH_DIR}/include/simulith_transport.h")
+      message(FATAL_ERROR "Could not find simulith_transport.h in ${SIMULITH_DIR}/include. Please set SIMULITH_DIR to the correct path.")
   endif()
 
   # Prefer a pre-built simulith static library if present in the simulith build dir.
@@ -56,8 +56,9 @@ if(${TGTNAME} STREQUAL cpu1)
   set(radio_cli_src 
     ${radio_cli_src}
     ${SIMULITH_DIR}/src/simulith_common.c
-    ${SIMULITH_DIR}/src/simulith_uart.c
-    ../../../fsw/apps/hwlib/sim/src/libuart.c
+    ${SIMULITH_DIR}/src/simulith_transport.c
+    ../../../fsw/apps/hwlib/sim/src/libgpio.c
+    ../../../fsw/apps/hwlib/sim/src/libspi.c
   )
   set(radio_cli_libs
     ${ZeroMQ_LIBRARIES}
@@ -67,10 +68,10 @@ endif()
 if(${TGTNAME} STREQUAL cpu2)
   set(radio_cli_src 
     ${radio_cli_src}
-    ../../../fsw/apps/hwlib/fsw/linux/libuart.c
+    ../../../fsw/apps/hwlib/fsw/linux/libgpio.c
+    ../../../fsw/apps/hwlib/fsw/linux/libspi.c
   )
 endif()
-
 
 add_executable(radio_cli ${radio_cli_src})
 target_include_directories(radio_cli PRIVATE ${radio_cli_includes})

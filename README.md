@@ -11,7 +11,7 @@ The radio passes the sent and received data straight through without inspection 
 The radio does not possess any direct from ground commands.
 
 The specific command format is as follows:
-* uint8, header, 0xABAC
+* uint8, header, 0xAA
 * uint8, command
   * (0) no operation
   * (1) get housekeeping
@@ -24,7 +24,7 @@ The specific command format is as follows:
   * (2) set configuration, 5
   * (3) receive data, 1
   * (4) send data, data length in bytes
-* uint8, payload array
+* uint8 array, payload
   * (0) no operation, N/A
   * (1) get housekeeping, N/A
   * (2) set configuration
@@ -35,11 +35,11 @@ The specific command format is as follows:
     * uint8, tx wavelength setting (TBD)
   * (3) receive length, data to receive in bytes
   * (4) send data, data array
-* uint8, trailer, 0xADAB
+* uint8, trailer, 0x11
 
 Response formats:
 * Housekeeping (Get housekeeping)
-  * uint8, header, 0xABAC
+  * uint8, header, 0xAA
   * uint16, command counter (number of commands accepted)
   * uint8, mode (0 Sleep, 1 TX, 2 RX, 3 Duplex)
   * uint8, ground lock
@@ -47,9 +47,11 @@ Response formats:
   * uint8, rx wavelength setting (TBD)
   * uint8, tx speed setting (TBD)
   * uint8, tx wavelength setting (TBD)
-  * uint16, packets received
-  * uint16, packets sent
-  * uint8, trailer, 0xADAB
+  * uint32, bytes in received buffer
+  * uint32, bytes in transmit buffer
+  * uint32, bytes received
+  * uint32, bytes sent
+  * uint8, trailer, 0x11
 
 ### Command Line Interface
 The CLI can be configured to connect to either hardware (serial/USB) or the simulation backend. This enables direct checkouts without interfering with other systems.
@@ -78,6 +80,7 @@ Telemetry message IDs
 Note that data received during the radio service will be placed on the software bus for transmission to other applications.
 
 ### Ground Software
+No components of the ground station are implemented and a simple UDP interface is used to send/receive data to the radio simulator.
 The XTCE file provided details the CCSDS Space Packet Protocol format used for commanding and telemetry.
 
 ### Simulation

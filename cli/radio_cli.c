@@ -15,9 +15,11 @@
 /*
 ** Global Variables
 */
-uart_info_t              RadioUart;
-RADIO_Device_HK_tlm_t   RadioHK;
-RADIO_Device_Data_tlm_t RadioData;
+spi_info_t               RadioSpi;
+gpio_info_t              RadioPowerGpio;
+gpio_info_t              RadioInterruptGpio;
+RADIO_Device_HK_tlm_t    RadioHK;
+RADIO_Device_Config_t    RadioConfig;
 
 /*
 ** Component Functions
@@ -32,10 +34,16 @@ void print_help(void)
                   "  n                                - ^                               \n"
                   "hk                                 - Request device housekeeping     \n"
                   "  h                                - ^                               \n"
-                  "radio                             - Request radio data             \n"
-                  "  s                                - ^                               \n"
-                  "cfg #                              - Send configuration #            \n"
-                  "  c #                              - ^                               \n"
+                  "cfg mode rx_speed rx_wave tx_speed tx_wave - Set configuration      \n"
+                  "  c mode rx_speed rx_wave tx_speed tx_wave - ^                      \n"
+                  "send \"data\"                       - Send data string               \n"
+                  "  s \"data\"                         - ^                               \n"
+                  "receive [max_bytes]                - Receive data (default 64)      \n"
+                  "  r [max_bytes]                    - ^                               \n"
+                  "power_on                           - Turn on radio power            \n"
+                  "  pon                              - ^                               \n"
+                  "power_off                          - Turn off radio power           \n"
+                  "  poff                             - ^                               \n"
                   "\n");
 }
 
@@ -72,14 +80,6 @@ int get_command(const char *str)
     {
         status = CMD_HK;
     }
-    else if (strcmp(lcmd, "radio") == 0)
-    {
-        status = CMD_RADIO;
-    }
-    else if (strcmp(lcmd, "s") == 0)
-    {
-        status = CMD_RADIO;
-    }
     else if (strcmp(lcmd, "cfg") == 0)
     {
         status = CMD_CFG;
@@ -88,6 +88,38 @@ int get_command(const char *str)
     {
         status = CMD_CFG;
     }
+    else if (strcmp(lcmd, "send") == 0)
+    {
+        status = CMD_SEND;
+    }
+    else if (strcmp(lcmd, "s") == 0)
+    {
+        status = CMD_SEND;
+    }
+    else if (strcmp(lcmd, "receive") == 0)
+    {
+        status = CMD_RECEIVE;
+    }
+    else if (strcmp(lcmd, "r") == 0)
+    {
+        status = CMD_RECEIVE;
+    }
+    else if (strcmp(lcmd, "power_on") == 0)
+    {
+        status = CMD_POWER_ON;
+    }
+    else if (strcmp(lcmd, "pon") == 0)
+    {
+        status = CMD_POWER_ON;
+    }
+    else if (strcmp(lcmd, "power_off") == 0)
+    {
+        status = CMD_POWER_OFF;
+    }
+    else if (strcmp(lcmd, "poff") == 0)
+    {
+        status = CMD_POWER_OFF;
+    }
     return status;
 }
 
@@ -95,7 +127,12 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
 {
     int32_t  status      = OS_SUCCESS;
     int32_t  exit_status = OS_SUCCESS;
-    uint32_t config;
+    uint8_t  interrupt_status;
+    uint8_t  send_data[RADIO_MAX_PAYLOAD_SIZE];
+    uint8_t  recv_data[RADIO_MAX_PAYLOAD_SIZE];
+    uint8_t  actual_length;
+    uint16_t max_length;
+    uint32_t i;
 
     /* Process command */
     switch (cc)
@@ -111,7 +148,7 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
         case CMD_NOOP:
             if (check_number_arguments(num_tokens, 0) == OS_SUCCESS)
             {
-                status = RADIO_CommandDevice(&RadioUart, RADIO_DEVICE_NOOP_CMD, 0);
+                status = RADIO_CommandDevice(&RadioSpi, RADIO_DEVICE_NOOP_CMD, 0, NULL);
                 if (status == OS_SUCCESS)
                 {
                     OS_printf("NOOP command success\n");
@@ -126,10 +163,20 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
         case CMD_HK:
             if (check_number_arguments(num_tokens, 0) == OS_SUCCESS)
             {
-                status = RADIO_RequestHK(&RadioUart, &RadioHK);
+                status = RADIO_RequestHK(&RadioSpi, &RadioHK);
                 if (status == OS_SUCCESS)
                 {
                     OS_printf("RADIO_RequestHK command success\n");
+                    OS_printf("  Command Counter:    %d\n", RadioHK.CommandCounter);
+                    OS_printf("  Mode:               %d\n", RadioHK.Mode);
+                    OS_printf("  Ground Lock:        %d\n", RadioHK.GroundLock);
+                    OS_printf("  RX Speed:           %d\n", RadioHK.RxSpeedSetting);
+                    OS_printf("  RX Wavelength:      %d\n", RadioHK.RxWavelengthSetting);
+                    OS_printf("  TX Speed:           %d\n", RadioHK.TxSpeedSetting);
+                    OS_printf("  TX Wavelength:      %d\n", RadioHK.TxWavelengthSetting);
+                    OS_printf("  Bytes in RX Buffer: %d\n", RadioHK.BytesInRxBuffer);
+                    OS_printf("  Bytes Received:     %d\n", RadioHK.BytesReceived);
+                    OS_printf("  Bytes Sent:         %d\n", RadioHK.BytesSent);
                 }
                 else
                 {
@@ -138,29 +185,22 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
             }
             break;
 
-        case CMD_RADIO:
-            if (check_number_arguments(num_tokens, 0) == OS_SUCCESS)
-            {
-                status = RADIO_RequestData(&RadioUart, &RadioData);
-                if (status == OS_SUCCESS)
-                {
-                    OS_printf("RADIO_RequestData command success\n");
-                }
-                else
-                {
-                    OS_printf("RADIO_RequestData command failed!\n");
-                }
-            }
-            break;
-
         case CMD_CFG:
-            if (check_number_arguments(num_tokens, 1) == OS_SUCCESS)
+            if (check_number_arguments(num_tokens, 5) == OS_SUCCESS)
             {
-                config = atoi(tokens[0]);
-                status = RADIO_CommandDevice(&RadioUart, RADIO_DEVICE_CFG_CMD, config);
+                RadioConfig.Mode = atoi(tokens[0]);
+                RadioConfig.RxSpeedSetting = atoi(tokens[1]);
+                RadioConfig.RxWavelengthSetting = atoi(tokens[2]);
+                RadioConfig.TxSpeedSetting = atoi(tokens[3]);
+                RadioConfig.TxWavelengthSetting = atoi(tokens[4]);
+                
+                status = RADIO_SetConfiguration(&RadioSpi, &RadioConfig);
                 if (status == OS_SUCCESS)
                 {
-                    OS_printf("Configuration command success with value %u\n", config);
+                    OS_printf("Configuration command success\n");
+                    OS_printf("  Mode: %d, RX: %d/%d, TX: %d/%d\n", 
+                              RadioConfig.Mode, RadioConfig.RxSpeedSetting, RadioConfig.RxWavelengthSetting,
+                              RadioConfig.TxSpeedSetting, RadioConfig.TxWavelengthSetting);
                 }
                 else
                 {
@@ -169,10 +209,112 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
             }
             break;
 
+        case CMD_SEND:
+            if (check_number_arguments(num_tokens, 1) == OS_SUCCESS)
+            {
+                /* Copy string data to send buffer */
+                strncpy((char*)send_data, tokens[0], RADIO_MAX_PAYLOAD_SIZE-1);
+                send_data[RADIO_MAX_PAYLOAD_SIZE-1] = '\0';
+                
+                status = RADIO_SendData(&RadioSpi, send_data, strlen((char*)send_data));
+                if (status == OS_SUCCESS)
+                {
+                    OS_printf("Send data command success: \"%s\" (%d bytes)\n", send_data, (int)strlen((char*)send_data));
+                }
+                else
+                {
+                    OS_printf("Send data command failed!\n");
+                }
+            }
+            break;
+
+        case CMD_RECEIVE:
+            max_length = 64; /* Default */
+            if (num_tokens == 1)
+            {
+                max_length = atoi(tokens[0]);
+                if (max_length > RADIO_MAX_PAYLOAD_SIZE)
+                {
+                    max_length = RADIO_MAX_PAYLOAD_SIZE;
+                }
+            }
+            else if (num_tokens > 1)
+            {
+                OS_printf("Invalid command format, type 'help' for more info\n");
+                break;
+            }
+            
+            status = RADIO_ReceiveData(&RadioSpi, recv_data, max_length, &actual_length);
+            if (status == OS_SUCCESS)
+            {
+                OS_printf("Receive data command success: %d bytes received\n", actual_length);
+                if (actual_length > 0)
+                {
+                    OS_printf("Data: ");
+                    for (i = 0; i < actual_length; i++)
+                    {
+                        if (recv_data[i] >= 32 && recv_data[i] <= 126) /* Printable */
+                        {
+                            OS_printf("%c", recv_data[i]);
+                        }
+                        else
+                        {
+                            OS_printf("\\x%02x", recv_data[i]);
+                        }
+                    }
+                    OS_printf("\n");
+                }
+            }
+            else
+            {
+                OS_printf("Receive data command failed!\n");
+            }
+            break;
+
+        case CMD_POWER_ON:
+            if (check_number_arguments(num_tokens, 0) == OS_SUCCESS)
+            {
+                status = RADIO_PowerOn(&RadioPowerGpio);
+                if (status == OS_SUCCESS)
+                {
+                    OS_printf("Radio power ON\n");
+                }
+                else
+                {
+                    OS_printf("Failed to turn on radio power!\n");
+                }
+            }
+            break;
+
+        case CMD_POWER_OFF:
+            if (check_number_arguments(num_tokens, 0) == OS_SUCCESS)
+            {
+                status = RADIO_PowerOff(&RadioPowerGpio);
+                if (status == OS_SUCCESS)
+                {
+                    OS_printf("Radio power OFF\n");
+                }
+                else
+                {
+                    OS_printf("Failed to turn off radio power!\n");
+                }
+            }
+            break;
+
         default:
             OS_printf("Invalid command format, type 'help' for more info\n");
             break;
     }
+    
+    /* Check interrupt status after each command */
+    if (RADIO_CheckInterrupt(&RadioInterruptGpio, &interrupt_status) == OS_SUCCESS)
+    {
+        if (interrupt_status)
+        {
+            OS_printf("*** INTERRUPT ACTIVE ***\n");
+        }
+    }
+    
     return exit_status;
 }
 
@@ -186,24 +328,45 @@ int main(int argc, char *argv[])
     char   *token_ptr;
     uint8_t run_status = OS_SUCCESS;
 
-    /* Initialize UART */
-    RadioUart.deviceString = RADIO_CFG_STRING;
-    RadioUart.handle = RADIO_CFG_HANDLE;
-    RadioUart.isOpen = PORT_CLOSED;
-    RadioUart.baud = RADIO_CFG_BAUDRATE_HZ;
-    RadioUart.access_option = uart_access_flag_RDWR;
+    /* Initialize SPI device */
+    RadioSpi.bus = RADIO_CFG_SPI_BUS;
+    RadioSpi.cs = RADIO_CFG_SPI_CS;
+    RadioSpi.isOpen = SPI_DEVICE_CLOSED;
 
-    OS_printf("Delay for UART initialization...\n");
+    /* Initialize GPIO devices */
+    RadioPowerGpio.pin = RADIO_CFG_GPIO_POWER_PIN;
+    RadioPowerGpio.direction = GPIO_OUTPUT;
+    RadioPowerGpio.isOpen = GPIO_CLOSED;
+
+    RadioInterruptGpio.pin = RADIO_CFG_GPIO_INTERRUPT_PIN;
+    RadioInterruptGpio.direction = GPIO_INPUT;
+    RadioInterruptGpio.isOpen = GPIO_CLOSED;
+
+    OS_printf("Delay for device initialization...\n");
     sleep(3);
 
-    status = uart_init_port(&RadioUart);
+    /* Initialize radio device */
+    status = RADIO_InitDevice(&RadioSpi, &RadioPowerGpio, &RadioInterruptGpio);
     if (status == OS_SUCCESS)
     {
-        printf("UART device %s configured with baudrate %d \n", RadioUart.deviceString, RadioUart.baud);
+        printf("Radio device initialized (SPI Bus %d, CS %d, Power GPIO %d, Interrupt GPIO %d)\n", 
+               RadioSpi.bus, RadioSpi.cs, RadioPowerGpio.pin, RadioInterruptGpio.pin);
+        
+        /* Power on the radio */
+        status = RADIO_PowerOn(&RadioPowerGpio);
+        if (status == OS_SUCCESS)
+        {
+            printf("Radio powered on\n");
+        }
+        else
+        {
+            printf("Failed to power on radio\n");
+            run_status = OS_ERROR;
+        }
     }
     else
     {
-        printf("UART device %s failed to initialize! \n", RadioUart.deviceString);
+        printf("Radio device failed to initialize!\n");
         run_status = OS_ERROR;
     }
 
@@ -243,11 +406,24 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Close the device
-    if (RadioUart.isOpen == PORT_OPEN)
+    // Close the devices
+    if (RadioSpi.isOpen == SPI_DEVICE_OPEN)
     {
-        uart_close_port(&RadioUart);
-        RadioUart.isOpen = PORT_CLOSED;
+        spi_close_device(&RadioSpi);
+        RadioSpi.isOpen = SPI_DEVICE_CLOSED;
+    }
+    
+    if (RadioPowerGpio.isOpen == GPIO_OPEN)
+    {
+        RADIO_PowerOff(&RadioPowerGpio);
+        gpio_close(&RadioPowerGpio);
+        RadioPowerGpio.isOpen = GPIO_CLOSED;
+    }
+    
+    if (RadioInterruptGpio.isOpen == GPIO_OPEN)
+    {
+        gpio_close(&RadioInterruptGpio);
+        RadioInterruptGpio.isOpen = GPIO_CLOSED;
     }
 
     return status;
