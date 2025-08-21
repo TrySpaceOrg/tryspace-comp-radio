@@ -1,4 +1,5 @@
 #include "radio_app.h"
+#include <string.h>
 
 RADIO_AppData_t RADIO_AppData;
 
@@ -139,13 +140,6 @@ int32 RADIO_AppInit(void)
                  RADIO_HK_TLM_LNGTH);
 
     /*
-    ** Initialize the device packet message
-    ** This packet is specific to your application
-    */
-    CFE_MSG_Init(CFE_MSG_PTR(RADIO_AppData.DevicePkt.TlmHeader), CFE_SB_ValueToMsgId(RADIO_DEVICE_TLM_MID),
-                 RADIO_DEVICE_TLM_LNGTH);
-
-    /*
     ** Reset all counters during application initialization
     */
     RADIO_ResetCounters();
@@ -158,11 +152,37 @@ int32 RADIO_AppInit(void)
    RADIO_AppData.HkTelemetryPkt.DeviceCount      = 0;
    RADIO_AppData.HkTelemetryPkt.DeviceEnabled    = RADIO_DEVICE_DISABLED;
 
-   /* 
-   ** Enable the device by default
-   ** This may not be applicable to all applications, but is included here as an example
-   */
-   RADIO_Enable();
+   /* Initialize SPI and GPIO devices (reference radio_cli.c) */
+   RADIO_AppData.RadioSpi.bus = RADIO_CFG_SPI_BUS;
+   RADIO_AppData.RadioSpi.cs = RADIO_CFG_SPI_CS;
+   RADIO_AppData.RadioSpi.isOpen = SPI_DEVICE_CLOSED;
+
+   RADIO_AppData.RadioPowerGpio.pin = RADIO_CFG_GPIO_POWER_PIN;
+   RADIO_AppData.RadioPowerGpio.direction = GPIO_OUTPUT;
+   RADIO_AppData.RadioPowerGpio.isOpen = GPIO_CLOSED;
+
+   RADIO_AppData.RadioInterruptGpio.pin = RADIO_CFG_GPIO_INTERRUPT_PIN;
+   RADIO_AppData.RadioInterruptGpio.direction = GPIO_INPUT;
+   RADIO_AppData.RadioInterruptGpio.isOpen = GPIO_CLOSED;
+
+   /* Initialize radio device (SPI + GPIO) */
+   status = RADIO_InitDevice(&RADIO_AppData.RadioSpi, &RADIO_AppData.RadioPowerGpio, &RADIO_AppData.RadioInterruptGpio);
+   if (status == OS_SUCCESS)
+   {
+       status = RADIO_PowerOn(&RADIO_AppData.RadioPowerGpio);
+       if (status == OS_SUCCESS)
+       {
+           RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
+       }
+       else
+       {
+           RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
+       }
+   }
+   else
+   {
+       RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
+   }
 
     /*
      ** Send an information event that the app has initialized.
@@ -246,9 +266,9 @@ void RADIO_ProcessGroundCommand(void)
             */
             if (RADIO_VerifyCmdLength(RADIO_AppData.MsgPtr, sizeof(RADIO_NoArgs_cmd_t)) == OS_SUCCESS)
             {
-#ifdef RADIO_CFG_DEBUG
-                OS_printf("RADIO: RADIO_NOOP_CC received \n");
-#endif
+                #ifdef RADIO_CFG_DEBUG
+                    OS_printf("RADIO: RADIO_NOOP_CC received \n");
+                #endif
 
                 /* Do any necessary checks, none for a NOOP */
 
@@ -261,7 +281,7 @@ void RADIO_ProcessGroundCommand(void)
 
                 /* Send event success or failure to the console, NOOP can only be successful */
                 CFE_EVS_SendEvent(RADIO_CMD_NOOP_INF_EID, CFE_EVS_EventType_INFORMATION,
-                                  "RADIO: NOOP command received");
+                                    "RADIO: NOOP command received");
             }
             break;
 
@@ -271,9 +291,9 @@ void RADIO_ProcessGroundCommand(void)
         case RADIO_RESET_COUNTERS_CC:
             if (RADIO_VerifyCmdLength(RADIO_AppData.MsgPtr, sizeof(RADIO_NoArgs_cmd_t)) == OS_SUCCESS)
             {
-#ifdef RADIO_CFG_DEBUG
-                OS_printf("RADIO: RADIO_RESET_COUNTERS_CC received \n");
-#endif
+                #ifdef RADIO_CFG_DEBUG
+                    OS_printf("RADIO: RADIO_RESET_COUNTERS_CC received \n");
+                #endif
                 RADIO_ResetCounters();
             }
             break;
@@ -284,9 +304,9 @@ void RADIO_ProcessGroundCommand(void)
         case RADIO_ENABLE_CC:
             if (RADIO_VerifyCmdLength(RADIO_AppData.MsgPtr, sizeof(RADIO_NoArgs_cmd_t)) == OS_SUCCESS)
             {
-#ifdef RADIO_CFG_DEBUG
-                OS_printf("RADIO: RADIO_ENABLE_CC received \n");
-#endif
+                #ifdef RADIO_CFG_DEBUG
+                    OS_printf("RADIO: RADIO_ENABLE_CC received \n");
+                #endif
                 RADIO_Enable();
             }
             break;
@@ -297,9 +317,9 @@ void RADIO_ProcessGroundCommand(void)
         case RADIO_DISABLE_CC:
             if (RADIO_VerifyCmdLength(RADIO_AppData.MsgPtr, sizeof(RADIO_NoArgs_cmd_t)) == OS_SUCCESS)
             {
-#ifdef RADIO_CFG_DEBUG
-                OS_printf("RADIO: RADIO_DISABLE_CC received \n");
-#endif
+                #ifdef RADIO_CFG_DEBUG
+                    OS_printf("RADIO: RADIO_DISABLE_CC received \n");
+                #endif
                 RADIO_Disable();
             }
             break;
@@ -311,12 +331,25 @@ void RADIO_ProcessGroundCommand(void)
         case RADIO_CONFIG_CC:
             if (RADIO_VerifyCmdLength(RADIO_AppData.MsgPtr, sizeof(RADIO_Config_cmd_t)) == OS_SUCCESS)
             {
-#ifdef RADIO_CFG_DEBUG
-                OS_printf("RADIO: RADIO_CONFIG_CC received \n");
-#endif
+                #ifdef RADIO_CFG_DEBUG
+                    OS_printf("RADIO: RADIO_CONFIG_CC received \n");
+                #endif
                 RADIO_Configure();
             }
             break;
+
+        /*
+        ** Radio Service
+        */
+       case RADIO_SERVICE_CC:
+            if (RADIO_VerifyCmdLength(RADIO_AppData.MsgPtr, sizeof(RADIO_NoArgs_cmd_t)) == OS_SUCCESS)
+            {
+                #ifdef RADIO_CFG_DEBUG
+                    OS_printf("RADIO: RADIO_SERVICE_CC received \n");
+                #endif
+                RADIO_Service();
+            }
+            break;  
 
         /*
         ** Invalid Command Codes
@@ -327,8 +360,8 @@ void RADIO_ProcessGroundCommand(void)
 
             /* Send invalid command code failure to the console */
             CFE_EVS_SendEvent(RADIO_CMD_ERR_EID, CFE_EVS_EventType_ERROR,
-                              "RADIO: Invalid command code for packet, MID = 0x%x, cmdCode = 0x%x",
-                              CFE_SB_MsgIdToValue(MsgId), CommandCode);
+                                "RADIO: Invalid command code for packet, MID = 0x%x, cmdCode = 0x%x",
+                                CFE_SB_MsgIdToValue(MsgId), CommandCode);
             break;
     }
     return;
@@ -351,10 +384,6 @@ void RADIO_ProcessTelemetryRequest(void)
     {
         case RADIO_REQ_HK_TLM:
             RADIO_ReportHousekeeping();
-            break;
-
-        case RADIO_REQ_DATA_TLM:
-            RADIO_ReportDeviceTelemetry();
             break;
 
         /*
@@ -380,11 +409,11 @@ void RADIO_ReportHousekeeping(void)
 {
     int32 status = OS_SUCCESS;
 
-    /* Check that device is enabled */
+    /* Use SPI for HK request */
     if (RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED)
     {
-        status = RADIO_RequestHK(&RADIO_AppData.RadioUart,
-                                  (RADIO_Device_HK_tlm_t *)&RADIO_AppData.HkTelemetryPkt.DeviceHK);
+        status = RADIO_RequestHK(&RADIO_AppData.RadioSpi,
+                                 (RADIO_Device_HK_tlm_t *)&RADIO_AppData.HkTelemetryPkt.DeviceHK);
         if (status == OS_SUCCESS)
         {
             RADIO_AppData.HkTelemetryPkt.DeviceCount++;
@@ -401,38 +430,6 @@ void RADIO_ReportHousekeeping(void)
     /* Time stamp and publish housekeeping telemetry */
     CFE_SB_TimeStampMsg((CFE_MSG_Message_t *)&RADIO_AppData.HkTelemetryPkt);
     CFE_SB_TransmitMsg((CFE_MSG_Message_t *)&RADIO_AppData.HkTelemetryPkt, true);
-    return;
-}
-
-/*
-** Collect and report device telemetry
-*/
-void RADIO_ReportDeviceTelemetry(void)
-{
-    int32 status = OS_SUCCESS;
-
-    /* Check that device is enabled */
-    if (RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED)
-    {
-        status = RADIO_RequestData(&RADIO_AppData.RadioUart,
-                                    (RADIO_Device_Data_tlm_t *)&RADIO_AppData.DevicePkt.Radio);
-        if (status == OS_SUCCESS)
-        {
-            /* Update packet count */
-            RADIO_AppData.HkTelemetryPkt.DeviceCount++;
-
-            /* Time stamp and publish data telemetry */
-            CFE_SB_TimeStampMsg((CFE_MSG_Message_t *)&RADIO_AppData.DevicePkt);
-            CFE_SB_TransmitMsg((CFE_MSG_Message_t *)&RADIO_AppData.DevicePkt, true);
-        }
-        else
-        {
-            RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-            CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
-                              "RADIO: Request device data reported error %d", status);
-        }
-    }
-    /* Intentionally do not report errors if device disabled */
     return;
 }
 
@@ -466,51 +463,22 @@ void RADIO_Enable(void)
 {
     int32 status = OS_SUCCESS;
 
-    /* Do any necessary checks, confirm that device is currently disabled */
+    /* Enable device using GPIO */
     if (RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_DISABLED)
     {
-        /* Increment command success counter */
-        RADIO_AppData.HkTelemetryPkt.CommandCount++;
-
-        /*
-        ** Do the action, initialize hardware interface and set enabled
-        */
-        RADIO_AppData.RadioUart.deviceString  = RADIO_CFG_STRING;
-        RADIO_AppData.RadioUart.handle        = RADIO_CFG_HANDLE;
-        RADIO_AppData.RadioUart.isOpen        = PORT_CLOSED;
-        RADIO_AppData.RadioUart.baud          = RADIO_CFG_BAUDRATE_HZ;
-        RADIO_AppData.RadioUart.access_option = uart_access_flag_RDWR;
-
-        status = uart_init_port(&RADIO_AppData.RadioUart);
+        status = RADIO_PowerOn(&RADIO_AppData.RadioPowerGpio);
         if (status == OS_SUCCESS)
         {
             RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
-
-            /* Increment device success counter */
-            RADIO_AppData.HkTelemetryPkt.DeviceCount++;
-
-            /* Send device event success to the console */
             CFE_EVS_SendEvent(RADIO_ENABLE_INF_EID, CFE_EVS_EventType_INFORMATION,
-                              "RADIO: Device enabled successfully");
+                              "RADIO: Device enabled");
         }
         else
         {
-            /* Increment device error counter */
             RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-
-            /* Send device event failure to the console */
-            CFE_EVS_SendEvent(RADIO_UART_INIT_ERR_EID, CFE_EVS_EventType_ERROR,
-                              "RADIO: Device UART port initialization error %d", status);
+            CFE_EVS_SendEvent(RADIO_ENABLE_ERR_EID, CFE_EVS_EventType_ERROR,
+                              "RADIO: Failed to enable device");
         }
-    }
-    else
-    {
-        /* Increment command error count */
-        RADIO_AppData.HkTelemetryPkt.CommandErrorCount++;
-
-        /* Send command event failure to the console */
-        CFE_EVS_SendEvent(RADIO_ENABLE_ERR_EID, CFE_EVS_EventType_ERROR,
-                          "RADIO: Device enable failed, already enabled");
     }
     return;
 }
@@ -522,45 +490,22 @@ void RADIO_Disable(void)
 {
     int32 status = OS_SUCCESS;
 
-    /* Do any necessary checks, confirm that device is currently enabled */
+    /* Disable device using GPIO */
     if (RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED)
     {
-        /* Increment command success counter */
-        RADIO_AppData.HkTelemetryPkt.CommandCount++;
-
-        /*
-        ** Do the action, close hardware interface and set disabled
-        */
-        status = uart_close_port(&RADIO_AppData.RadioUart);
+        status = RADIO_PowerOff(&RADIO_AppData.RadioPowerGpio);
         if (status == OS_SUCCESS)
         {
             RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-
-            /* Increment device success counter */
-            RADIO_AppData.HkTelemetryPkt.DeviceCount++;
-
-            /* Send device event success to the console */
             CFE_EVS_SendEvent(RADIO_DISABLE_INF_EID, CFE_EVS_EventType_INFORMATION,
-                              "RADIO: Device disabled successfully");
+                              "RADIO: Device disabled");
         }
         else
         {
-            /* Increment device error counter */
             RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-
-            /* Send device event failure to the console */
-            CFE_EVS_SendEvent(RADIO_UART_CLOSE_ERR_EID, CFE_EVS_EventType_ERROR,
-                              "RADIO: Device UART port close error %d", status);
+            CFE_EVS_SendEvent(RADIO_DISABLE_ERR_EID, CFE_EVS_EventType_ERROR,
+                              "RADIO: Failed to disable device");
         }
-    }
-    else
-    {
-        /* Increment command error count */
-        RADIO_AppData.HkTelemetryPkt.CommandErrorCount++;
-
-        /* Send command event failure to the console */
-        CFE_EVS_SendEvent(RADIO_DISABLE_ERR_EID, CFE_EVS_EventType_ERROR,
-                          "RADIO: Device disable failed, already disabled");
     }
     return;
 }
@@ -603,8 +548,8 @@ void RADIO_Configure(void)
         /* Increment command success counter */
         RADIO_AppData.HkTelemetryPkt.CommandCount++;
 
-        /* Do the action, command device to with a new configuration */
-        device_status = RADIO_CommandDevice(&RADIO_AppData.RadioUart, RADIO_DEVICE_CFG_CMD, config_cmd->DeviceCfg);
+        /* Do the action, command device with new configuration using SPI */
+        device_status = RADIO_SetConfiguration(&RADIO_AppData.RadioSpi, (RADIO_Device_Config_t *)config_cmd);
         if (device_status == OS_SUCCESS)
         {
             /* Increment device success counter */
@@ -612,7 +557,7 @@ void RADIO_Configure(void)
 
             /* Send device event success to the console */
             CFE_EVS_SendEvent(RADIO_CMD_CONFIG_INF_EID, CFE_EVS_EventType_INFORMATION,
-                              "RADIO: Configuration command received: %u", config_cmd->DeviceCfg);
+                              "RADIO: Configuration command received");
         }
         else
         {
@@ -621,9 +566,96 @@ void RADIO_Configure(void)
 
             /* Send device event failure to the console */
             CFE_EVS_SendEvent(RADIO_CMD_CONFIG_DEV_ERR_EID, CFE_EVS_EventType_ERROR,
-                              "RADIO: Configuration command received: %u", config_cmd->DeviceCfg);
+                              "RADIO: Configuration command failed");
         }
     }
+    return;
+}
+
+/*
+** Service the radio, sending and receiving data available
+*/
+void RADIO_Service(void)
+{
+    uint8 actual_length = 0;
+    CFE_SB_Buffer_t *SBBufPtr;
+    uint32 max_rx_transactions = RADIO_CFG_MAX_RX_MSGS_PER_POLL;
+
+    /* Outer loop - perform up to max_rx_transactions receive attempts */
+    while (max_rx_transactions > 0)
+    {
+        /* Receive data from the radio into the tail of the buffer */
+        RADIO_ReceiveData(&RADIO_AppData.RadioSpi, RADIO_AppData.ReceiveBuffer + RADIO_AppData.ReceiveBuffLength,
+                           RADIO_MAX_PAYLOAD_SIZE - RADIO_AppData.ReceiveBuffLength, &actual_length);
+        if (actual_length == 0)
+        {
+            /* No more data available from device */
+            break;
+        }
+
+        /* Advance the buffer length, but guard against overflow */
+        RADIO_AppData.ReceiveBuffLength += actual_length;
+        if (RADIO_AppData.ReceiveBuffLength > RADIO_MAX_PAYLOAD_SIZE)
+        {
+            /* Buffer overflow - drop contents and report error */
+            RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+            CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                              "RADIO: receive buffer overflow, len=%u", (unsigned int)RADIO_AppData.ReceiveBuffLength);
+            RADIO_AppData.ReceiveBuffLength = 0;
+            break;
+        }
+
+        /* Try to extract one or more complete CFE messages from the accumulated buffer */
+        while (RADIO_AppData.ReceiveBuffLength >= sizeof(CFE_MSG_CommandHeader_t))
+        {
+            SBBufPtr = (CFE_SB_Buffer_t *)RADIO_AppData.ReceiveBuffer;
+
+                /* Get the size from the message header */
+                CFE_MSG_Size_t msg_size = 0;
+                CFE_Status_t get_size_status = CFE_MSG_GetSize((CFE_MSG_Message_t *)&SBBufPtr->Msg, &msg_size);
+                if (get_size_status != CFE_SUCCESS)
+                {
+                    /* Malformed header or error extracting size; drop buffer */
+                    RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+                    CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                                      "RADIO: Failed to get message size from header, rc=%d", (int)get_size_status);
+                    RADIO_AppData.ReceiveBuffLength = 0;
+                    break;
+                }
+
+            /* If the header reports a size larger than we currently have, wait for more data */
+            if (msg_size > RADIO_AppData.ReceiveBuffLength)
+            {
+                break; /* need more bytes */
+            }
+
+            /* We have a complete message - transmit it onto the software bus */
+            if (CFE_SB_TransmitMsg((CFE_MSG_Message_t *)SBBufPtr, true) == CFE_SUCCESS)
+            {
+                RADIO_AppData.HkTelemetryPkt.DeviceCount++;
+            }
+            else
+            {
+                RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+                CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                                  "RADIO: Failed to transmit received message to SB");
+            }
+
+            /* Remove the processed message from the front of the buffer */
+            if (msg_size < RADIO_AppData.ReceiveBuffLength)
+            {
+                memmove(RADIO_AppData.ReceiveBuffer, RADIO_AppData.ReceiveBuffer + msg_size,
+                        RADIO_AppData.ReceiveBuffLength - msg_size);
+            }
+            RADIO_AppData.ReceiveBuffLength -= msg_size;
+        }
+
+        /* Decrement receive attempts and continue to try to read more packets */
+        max_rx_transactions--;
+    }
+
+    /* TODO: Downlink all data */
+
     return;
 }
 

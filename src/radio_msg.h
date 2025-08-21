@@ -12,6 +12,7 @@
 #define RADIO_ENABLE_CC         2
 #define RADIO_DISABLE_CC        3
 #define RADIO_CONFIG_CC         4
+#define RADIO_SERVICE_CC        5
 
 /*
 ** Telemetry Request Command Codes
@@ -37,17 +38,6 @@ typedef struct
     uint16                  DeviceCfg;
 
 } RADIO_Config_cmd_t;
-
-/*
-** RADIO device telemetry definition
-*/
-typedef struct
-{
-    CFE_MSG_TelemetryHeader_t TlmHeader;
-    RADIO_Device_Data_tlm_t    Radio;
-
-} __attribute__((packed)) RADIO_Device_tlm_t;
-#define RADIO_DEVICE_TLM_LNGTH sizeof(RADIO_Device_tlm_t)
 
 /*
 ** RADIO housekeeping type definition

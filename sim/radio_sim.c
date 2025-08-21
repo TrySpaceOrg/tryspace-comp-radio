@@ -429,17 +429,11 @@ static void radio_sim_on_tick(uint64_t tick_time_ns, const simulith_42_context_t
             {
                 if (cmd == 0) 
                 {   // read
-
-                    printf("Radio power state read (via GPIO), current value %d\n", gpio_power_state.value);
-
                     uint8_t resp[3] = {0, pin, gpio_power_state.value};
                     simulith_transport_send((transport_port_t*)&g_power_gpio_device, resp, sizeof(resp));
                 } 
                 else if (cmd == 1 && gpio_bytes >= 3) 
                 {   // write
-
-                    printf("Radio power state write (via GPIO), new value %d\n", gpio_rx_buf[2]);
-
                     uint8_t value = gpio_rx_buf[2];
                     if (value != gpio_power_state.value) 
                     {
@@ -580,18 +574,18 @@ int radio_sim_init(radio_sim_state_t* state)
         pthread_mutex_destroy(&state->buffer_mutex);
         return RADIO_SIM_ERROR;
     }
-    
+
     // Configure UDP addresses
     memset(&state->ground_rx_addr, 0, sizeof(state->ground_rx_addr));
     state->ground_rx_addr.sin_family = AF_INET;
     state->ground_rx_addr.sin_addr.s_addr = INADDR_ANY;
     state->ground_rx_addr.sin_port = htons(RADIO_CFG_UDP_GROUND_RX_PORT);
-    
+
     memset(&state->ground_tx_addr, 0, sizeof(state->ground_tx_addr));
     state->ground_tx_addr.sin_family = AF_INET;
-    state->ground_tx_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    state->ground_tx_addr.sin_addr.s_addr = inet_addr("0.0.0.0");
     state->ground_tx_addr.sin_port = htons(RADIO_CFG_UDP_GROUND_TX_PORT);
-    
+
     // Bind RX socket
     if (bind(state->udp_rx_socket, (struct sockaddr*)&state->ground_rx_addr, sizeof(state->ground_rx_addr)) < 0)
     {
@@ -719,7 +713,7 @@ static void radio_sim_component_cleanup(component_state_t* state)
 
 static const component_interface_t radio_sim_interface = {
     .name = "radio_sim",
-    .description = "Radio simulation component with SPI/GPIO and UDP ground interface",
+    .description = "Radio simulation component with SPI, GPIO, and UDP ground interface",
     .init = radio_sim_component_init,
     .tick = radio_sim_component_tick,
     .cleanup = radio_sim_component_cleanup,

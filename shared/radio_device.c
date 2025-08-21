@@ -113,7 +113,7 @@ int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint8_t payload_len
 {
     int32_t status = OS_SUCCESS;
     uint8_t tx_buffer[RADIO_MAX_PAYLOAD_SIZE + 5]; /* Header + cmd + len + payload + trailer */
-    uint32_t total_len;
+    int32_t total_len;
     
     if (device == NULL)
     {
@@ -138,7 +138,7 @@ int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint8_t payload_len
     
     #ifdef RADIO_CFG_DEBUG
         OS_printf("RADIO_CommandDevice[%d] = ", total_len);
-        for (uint32_t i = 0; i < total_len; i++)
+        for (int32_t i = 0; i < total_len; i++)
         {
             OS_printf("%02x", tx_buffer[i]);
         }
@@ -297,7 +297,7 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint8_t max_length,
     /* Read response - first read to get header and length */
     memset(tx_buffer, 0, sizeof(tx_buffer));
     status = spi_read(device, data, max_length); /* Read header + cmd + len + 2 bytes data + trailer start */
-    if (status != max_length)
+    if (status < 0 )
     {
         OS_printf("RADIO_ReceiveData: SPI read failed with error %d\n", status);
         return OS_ERROR;

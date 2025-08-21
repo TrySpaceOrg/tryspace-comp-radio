@@ -46,14 +46,17 @@ typedef struct
     uint32             RunStatus; /* App run status for controlling the application state */
 
     /*
-     ** Device data
-     */
-    RADIO_Device_tlm_t DevicePkt; /* Device specific data packet */
-
-    /*
     ** Device protocol
     */
-    uart_info_t RadioUart; /* Hardware protocol definition */
+    spi_info_t RadioSpi;           /* SPI device info */
+    gpio_info_t RadioPowerGpio;    /* Power GPIO info */
+    gpio_info_t RadioInterruptGpio;/* Interrupt GPIO info */
+
+    /*
+    ** Device data
+    */
+    uint8_t ReceiveBuffer[1024]; /* Buffer for receiving data */
+    uint32_t ReceiveBuffLength;  /* Length of data in receive buffer */
 
 } RADIO_AppData_t;
 
@@ -81,6 +84,7 @@ void  RADIO_ResetCounters(void);
 void  RADIO_Enable(void);
 void  RADIO_Disable(void);
 void  RADIO_Configure(void);
+void  RADIO_Service(void);
 int32 RADIO_VerifyCmdLength(CFE_MSG_Message_t *msg, uint16 expected_length);
 
 #endif /* _RADIO_APP_H_ */
