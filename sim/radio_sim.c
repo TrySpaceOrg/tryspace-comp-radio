@@ -46,7 +46,7 @@ static void* udp_ground_thread(void* arg)
                 printf("Received %zd bytes from ground station\n", bytes_received);
                 
                 // Write to RX buffer if radio is powered and in RX or DUPLEX mode
-                if (state->powered_on && 
+                if (gpio_power_state.value && 
                     (state->config.Mode == RADIO_SIM_MODE_RX || state->config.Mode == RADIO_SIM_MODE_DUPLEX))
                 {
                     pthread_mutex_lock(&state->buffer_mutex);
@@ -163,7 +163,7 @@ static void radio_sim_send_housekeeping(radio_sim_state_t* state)
 {
     uint8_t response[RADIO_DEVICE_HK_SIZE];
     
-    printf("Building HK response: powered_on=%d\n", state->powered_on);
+    printf("Building HK response: powered_on=%d\n", gpio_power_state.value);
     
     // Build housekeeping response
     response[0] = RADIO_DEVICE_HDR;
@@ -211,7 +211,7 @@ static void radio_sim_send_housekeeping(radio_sim_state_t* state)
 */
 static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t* data, size_t length)
 {
-    printf("SPI Handler: Received %zu bytes, powered_on=%d\n", length, state->powered_on);
+    printf("SPI Handler: Received %zu bytes, powered_on=%d\n", length, gpio_power_state.value);
     printf("SPI Data: ");
     for (size_t i = 0; i < length && i < 10; i++) {
         printf("0x%02X ", data[i]);
@@ -225,7 +225,7 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
     }
     
     // Check if radio is powered on - if not, drop all commands silently
-    if (!state->powered_on)
+    if (!gpio_power_state.value)
     {
         printf("Radio not powered - dropping SPI command\n");
         return;
@@ -244,24 +244,24 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
     }
     
     // Validate length
-    if (length < (size_t) (6 + payload_len))  // header + cmd + len + payload + trailer
+    if (length < (size_t) (4 + payload_len))  // header + cmd + len + payload + trailer
     {
         printf("Command length mismatch\n");
         return;
     }
     
     // Validate trailer
-    uint16_t trailer = (data[4 + payload_len] << 8) | data[5 + payload_len];
+    uint8_t trailer = data[length-1];
     if (trailer != RADIO_DEVICE_TRAILER)
     {
-        printf("Invalid command trailer: 0x%04X\n", trailer);
+        printf("Invalid command trailer: 0x%02X\n", trailer);
         return;
     }
     
     printf("SPI Command: 0x%02X, Length: %d\n", command, payload_len);
     
     // Check if radio is powered
-    if (!state->powered_on && command != RADIO_DEVICE_NOOP_CMD)
+    if (!gpio_power_state.value)
     {
         printf("Radio not powered - ignoring command\n");
         return;
@@ -402,7 +402,7 @@ static void radio_sim_on_tick(uint64_t tick_time_ns, const simulith_42_context_t
         if (spi_bytes > 0) 
         {
             printf("Received %d bytes via SPI (Simulith transport)\n", spi_bytes);
-            if (g_state->powered_on) 
+            if (gpio_power_state.value) 
             {
                 radio_sim_handle_spi_command(g_state, spi_rx_buf, spi_bytes);
             } 
@@ -429,11 +429,17 @@ static void radio_sim_on_tick(uint64_t tick_time_ns, const simulith_42_context_t
             {
                 if (cmd == 0) 
                 {   // read
+
+                    printf("Radio power state read (via GPIO), current value %d\n", gpio_power_state.value);
+
                     uint8_t resp[3] = {0, pin, gpio_power_state.value};
                     simulith_transport_send((transport_port_t*)&g_power_gpio_device, resp, sizeof(resp));
                 } 
                 else if (cmd == 1 && gpio_bytes >= 3) 
                 {   // write
+
+                    printf("Radio power state write (via GPIO), new value %d\n", gpio_rx_buf[2]);
+
                     uint8_t value = gpio_rx_buf[2];
                     if (value != gpio_power_state.value) 
                     {
@@ -503,24 +509,17 @@ int radio_sim_init(radio_sim_state_t* state)
         printf("Failed to initialize buffer mutex\n");
         return RADIO_SIM_ERROR;
     }
-
-    // Initialize device configuration
-    state->spi_bus = RADIO_CFG_SPI_BUS;
-    state->spi_cs = RADIO_CFG_SPI_CS;
     
     // Initialize SPI device (server/bind)
     memset(&g_spi_device, 0, sizeof(g_spi_device));
     snprintf(g_spi_device.name, sizeof(g_spi_device.name), "radio_sim_spi");
     snprintf(g_spi_device.address, sizeof(g_spi_device.address), "ipc:///tmp/simulith_pub:%d", 
-         SIMULITH_SPI_BASE_PORT + (state->spi_bus * 8) + state->spi_cs);
+         SIMULITH_SPI_BASE_PORT + (RADIO_CFG_SPI_BUS * 8) + RADIO_CFG_SPI_CS);
     g_spi_device.is_server = 1;
     // No bus_id/cs_id fields in transport_port_t
     if (simulith_transport_init(&g_spi_device) != SIMULITH_TRANSPORT_SUCCESS)
     {
     printf("Failed to initialize Simulith SPI transport\n");
-#ifdef STANDALONE_MODE
-    simulith_client_shutdown();
-#endif
     pthread_mutex_destroy(&state->buffer_mutex);
     return RADIO_SIM_ERROR;
     }
@@ -606,27 +605,12 @@ int radio_sim_init(radio_sim_state_t* state)
         return RADIO_SIM_ERROR;
     }
     
-    // Initialize time provider
-    state->time_handle = simulith_time_init();
-    if (!state->time_handle)
-    {
-        printf("Failed to initialize time provider\n");
-        close(state->udp_tx_socket);
-        close(state->udp_rx_socket);
-        simulith_transport_close(&g_interrupt_gpio_device);
-        simulith_transport_close(&g_power_gpio_device);
-        simulith_transport_close(&g_spi_device);
-        pthread_mutex_destroy(&state->buffer_mutex);
-        return RADIO_SIM_ERROR;
-    }
-    
     // Initialize default values
     state->hk.CommandCounter = 0;
     state->hk.Mode = RADIO_SIM_MODE_SLEEP;
     state->hk.GroundLock = 0;
-    state->powered_on = 0;
     state->interrupt_asserted = 0;
-    state->last_update_time = simulith_time_get(state->time_handle);
+    state->last_update_time = 0.0;
     
     // Start UDP ground thread
     state->udp_thread_running = 1;
@@ -670,13 +654,7 @@ void radio_sim_cleanup(radio_sim_state_t* state)
     
     // Cleanup resources
     g_state = NULL;
-    
-    if (state->time_handle)
-    {
-        simulith_time_cleanup(state->time_handle);
-        state->time_handle = NULL;
-    }
-    
+        
     if (state->udp_rx_socket >= 0)
     {
         close(state->udp_rx_socket);
@@ -694,10 +672,6 @@ void radio_sim_cleanup(radio_sim_state_t* state)
     simulith_transport_close(&g_spi_device);
     
     pthread_mutex_destroy(&state->buffer_mutex);
-    
-#ifdef STANDALONE_MODE
-    simulith_client_shutdown();
-#endif
 }
 
 static int radio_sim_component_init(component_state_t** state)

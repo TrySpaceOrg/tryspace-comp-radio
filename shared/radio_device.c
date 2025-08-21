@@ -113,7 +113,6 @@ int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint8_t payload_len
 {
     int32_t status = OS_SUCCESS;
     uint8_t tx_buffer[RADIO_MAX_PAYLOAD_SIZE + 5]; /* Header + cmd + len + payload + trailer */
-    uint8_t rx_buffer[RADIO_MAX_PAYLOAD_SIZE + 5];
     uint32_t total_len;
     
     if (device == NULL)
@@ -147,8 +146,8 @@ int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint8_t payload_len
     #endif
     
     /* Perform SPI transaction */
-    status = spi_transaction(device, tx_buffer, rx_buffer, total_len, 0, 8, 1);
-    if (status != SPI_SUCCESS)
+    status = spi_write(device, tx_buffer, total_len);
+    if (status != total_len)
     {
         OS_printf("RADIO_CommandDevice: SPI transaction failed with error %d\n", status);
         return OS_ERROR;
@@ -184,8 +183,8 @@ int32_t RADIO_RequestHK(spi_info_t *device, RADIO_Device_HK_tlm_t *data)
     
     /* Read HK response */
     memset(tx_buffer, 0, sizeof(tx_buffer));
-    status = spi_transaction(device, tx_buffer, rx_buffer, RADIO_DEVICE_HK_SIZE, 0, 8, 1);
-    if (status != SPI_SUCCESS)
+    status = spi_read(device, rx_buffer, RADIO_DEVICE_HK_SIZE);
+    if (status != RADIO_DEVICE_HK_SIZE)
     {
         OS_printf("RADIO_RequestHK: SPI read failed with error %d\n", status);
         return OS_ERROR;
@@ -294,49 +293,39 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint8_t max_length,
     {
         return status;
     }
-    
-    /* Wait briefly for response */
-    OS_TaskDelay(10);
-    
+
     /* Read response - first read to get header and length */
     memset(tx_buffer, 0, sizeof(tx_buffer));
-    status = spi_transaction(device, tx_buffer, rx_buffer, 6, 0, 8, 1); /* Read header + cmd + len + 2 bytes data + trailer start */
-    if (status != SPI_SUCCESS)
+    status = spi_read(device, data, max_length); /* Read header + cmd + len + 2 bytes data + trailer start */
+    if (status != max_length)
     {
         OS_printf("RADIO_ReceiveData: SPI read failed with error %d\n", status);
         return OS_ERROR;
     }
     
-    /* Verify header */
+    /* Verify data header */
     if (rx_buffer[0] != RADIO_DEVICE_HDR)
     {
         OS_printf("RADIO_ReceiveData: Invalid response header\n");
         return OS_ERROR;
     }
-    
+
+    /* Verify data trailer */
+    if (rx_buffer[rx_buffer[2] - 1] != RADIO_DEVICE_TRAILER)
+    {
+        OS_printf("RADIO_ReceiveData: Invalid response trailer\n");
+        return OS_ERROR;
+    }
+
     /* Get payload length from response */
-    response_len = rx_buffer[2];
+    response_len = data[2];
     if (response_len > max_length)
     {
         OS_printf("RADIO_ReceiveData: Response too large (%d > %d)\n", response_len, max_length);
         return OS_ERROR;
     }
     
-    /* Read remaining data if needed */
-    if (response_len > 1) /* Already read 1 byte of data */
-    {
-        memset(tx_buffer, 0, sizeof(tx_buffer));
-        status = spi_transaction(device, tx_buffer, &rx_buffer[4], response_len - 1 + 1, 0, 8, 1); /* Remaining data + trailer */
-        if (status != SPI_SUCCESS)
-        {
-            OS_printf("RADIO_ReceiveData: SPI read remaining failed with error %d\n", status);
-            return OS_ERROR;
-        }
-    }
-    
-    /* Copy received data */
-    memcpy(data, &rx_buffer[3], response_len);
-    *actual_length = response_len;
+    *actual_length = response_len + 4;
     
     return OS_SUCCESS;
 }

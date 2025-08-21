@@ -39,15 +39,9 @@
 typedef struct 
 {
     // Communication handles
-    uint8_t spi_bus;
-    uint8_t spi_cs;
-    uint32_t spi_handle;
-    uint32_t power_gpio_handle;
-    uint32_t interrupt_gpio_handle;
     void* time_handle;
     
     // Device state
-    uint8_t powered_on;
     uint8_t interrupt_asserted;
     RADIO_Device_HK_tlm_t hk;
     RADIO_Device_Config_t config;
