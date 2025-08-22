@@ -155,8 +155,10 @@ static int radio_sim_read_from_rx_buffer(radio_sim_state_t* state, uint8_t* data
 */
 static void radio_sim_send_response(radio_sim_state_t* state, const uint8_t* data, uint32_t length)
 {
+    #ifdef RADIO_CFG_DEBUG
     printf("Sending SPI response: length=%d, first 4 bytes: 0x%02X 0x%02X 0x%02X 0x%02X\n", 
         length, data[0], data[1], data[2], data[3]);
+    #endif
     simulith_transport_send(&g_spi_device, data, length);
 }
 
@@ -167,8 +169,10 @@ static void radio_sim_send_housekeeping(radio_sim_state_t* state)
 {
     uint8_t response[RADIO_DEVICE_HK_SIZE];
     
+    #ifdef RADIO_CFG_DEBUG
     printf("Building HK response: powered_on=%d\n", gpio_power_state.value);
-    
+    #endif
+
     // Build housekeeping response
     response[0] = RADIO_DEVICE_HDR;
     response[1] = (state->hk.CommandCounter >> 8) & 0xFF;
@@ -180,7 +184,9 @@ static void radio_sim_send_housekeeping(radio_sim_state_t* state)
     response[7] = state->hk.TxSpeedSetting;
     response[8] = state->hk.TxWavelengthSetting;
     
+    #ifdef RADIO_CFG_DEBUG
     printf("HK header: 0x%02X, counter: %d\n", response[0], state->hk.CommandCounter);
+    #endif
     
     // Bytes in RX buffer (4 bytes)
     uint32_t rx_count = radio_sim_get_rx_buffer_count(state);
@@ -204,8 +210,10 @@ static void radio_sim_send_housekeeping(radio_sim_state_t* state)
     // Trailer
     response[21] = RADIO_DEVICE_TRAILER;
     
+    #ifdef RADIO_CFG_DEBUG
     printf("HK response built, size=%ld, trailer at [21]: 0x%02X\n", 
            RADIO_DEVICE_HK_SIZE, response[21]);
+    #endif
     
     radio_sim_send_response(state, response, RADIO_DEVICE_HK_SIZE);
 }
@@ -215,12 +223,14 @@ static void radio_sim_send_housekeeping(radio_sim_state_t* state)
 */
 static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t* data, size_t length)
 {
+    #ifdef RADIO_CFG_DEBUG
     printf("SPI Handler: Received %zu bytes, powered_on=%d\n", length, gpio_power_state.value);
     printf("SPI Data: ");
     for (size_t i = 0; i < length && i < 10; i++) {
         printf("0x%02X ", data[i]);
     }
     printf("\n");
+    #endif
 
     if (!state || !data || length < 4)  // Minimum: header(1) + cmd(1) + len(1) + trailer(1)
     {
@@ -231,12 +241,13 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
     // Check if radio is powered on - if not, drop all commands silently
     if (!gpio_power_state.value)
     {
+        #ifdef RADIO_CFG_DEBUG
         printf("Radio not powered - dropping SPI command\n");
+        #endif
         return;
     }
     
     // Parse command
-    uint8_t header = data[0];
     uint8_t command = data[1];
     uint8_t payload_len = data[2];
     
@@ -246,9 +257,6 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
         printf("Invalid command header: 0x%02X\n", data[0]);
         return;
     }
-
-    command = data[1];
-    payload_len = data[2];
 
     /* Validate that the provided buffer contains the full command (header+cmd+len+payload+trailer) */
     size_t expected_len = 4 + payload_len; /* total bytes in frame */
@@ -269,7 +277,9 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
     // Check if radio is powered on - if not, drop all commands silently
     if (!gpio_power_state.value)
     {
+        #ifdef RADIO_CFG_DEBUG
         printf("Radio not powered - dropping SPI command\n");
+        #endif
         return;
     }
 
@@ -342,12 +352,14 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
                 tx_buf[2 + to_send] = RADIO_DEVICE_TRAILER;
 
                 /* Debug print: show reply buffer and length */
+                #ifdef RADIO_CFG_DEBUG
                 printf("radio_sim: RECEIVE_CMD reply: requested=%d, to_send=%d, send_len=%d\n", requested, to_send, requested);
                 printf("radio_sim: reply buffer: ");
                 for (int i = 0; i < requested && i < 32; ++i) {
                     printf("%02X ", tx_buf[i]);
                 }
                 printf("\n");
+                #endif
 
                 /* Send exactly 'requested' bytes so caller reading 'requested' bytes gets frame + padding */
                 int send_len = requested;
@@ -432,7 +444,6 @@ static void radio_sim_on_tick(uint64_t tick_time_ns, const simulith_42_context_t
         spi_bytes = simulith_transport_receive(&g_spi_device, spi_rx_buf, sizeof(spi_rx_buf));
         if (spi_bytes > 0) 
         {
-            printf("Received %d bytes via SPI (Simulith transport)\n", spi_bytes);
             if (gpio_power_state.value) 
             {
                 radio_sim_handle_spi_command(g_state, spi_rx_buf, spi_bytes);
@@ -469,7 +480,9 @@ static void radio_sim_on_tick(uint64_t tick_time_ns, const simulith_42_context_t
                     if (value != gpio_power_state.value) 
                     {
                         gpio_power_state.value = value;
+                        #ifdef RADIO_CFG_DEBUG
                         printf("Radio power %s (via GPIO write)\n", value ? "ON" : "OFF");
+                        #endif
                         if (!value) 
                         {
                             pthread_mutex_lock(&g_state->buffer_mutex);
@@ -508,7 +521,9 @@ static void radio_sim_on_tick(uint64_t tick_time_ns, const simulith_42_context_t
                 {   // write
                     uint8_t value = gpio_rx_buf[2];
                     gpio_interrupt_state.value = value;
+                    #ifdef RADIO_CFG_DEBUG
                     printf("Interrupt GPIO set to %d (via GPIO write)\n", value);
+                    #endif
                 }
             }
         }
@@ -757,8 +772,7 @@ static const component_interface_t radio_sim_interface = {
     .description = "Radio simulation component with SPI, GPIO, and UDP ground interface",
     .init = radio_sim_component_init,
     .tick = radio_sim_component_tick,
-    .cleanup = radio_sim_component_cleanup,
-    .configure = NULL  // Not implemented yet
+    .cleanup = radio_sim_component_cleanup
 };
 
 // Component registration function - exported for dynamic loading
