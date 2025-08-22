@@ -5,13 +5,17 @@
 ** Include Files
 */
 #include "cfe.h"
+#include "cfe_tbl.h"
 #include "radio_device.h"
 #include "radio_events.h"
 #include "radio_perfids.h"
 #include "radio_msg.h"
 #include "radio_msgids.h"
+#include "radio_sub_tbl.h"
 #include "radio_version.h"
 #include "hwlib.h"
+
+//#include <string.h>
 
 /*
 ** Specified pipe depth - how many messages will be queued in the pipe

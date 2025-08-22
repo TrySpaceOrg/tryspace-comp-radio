@@ -16,7 +16,8 @@
 #define RADIO_CFG_INTERRUPT_THRESHOLD  {{ config.interrupt_threshold }}
 #define RADIO_CFG_MS_TIMEOUT           {{ config.ms_timeout }}
 #define RADIO_CFG_MAX_RX_MSGS_PER_POLL {{ config.max_rx_msgs_per_poll }}
-#define RADIO_CFG_MAX_TX_MSGS_PER_POLL {{ config.max_rx_msgs_per_poll }}
+#define RADIO_CFG_MAX_TX_MSGS_PER_POLL {{ config.max_tx_msgs_per_poll }}
+#define RADIO_CFG_MAX_SUBSCRIPTIONS    {{ config.max_subscriptions }}
 {% if config.debug %}#define RADIO_CFG_DEBUG{% endif %}
 #endif
 

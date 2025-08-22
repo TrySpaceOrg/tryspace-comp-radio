@@ -10,4 +10,5 @@ radio:
   ms_timeout: 250
   max_rx_msgs_per_poll: 10
   max_tx_msgs_per_poll: 50
+  max_subscriptions: 128
   debug: true

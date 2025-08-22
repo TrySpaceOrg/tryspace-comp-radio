@@ -263,6 +263,15 @@ int32_t RADIO_SendData(spi_info_t *device, uint8_t *data, uint8_t data_length)
     {
         return OS_ERROR;
     }
+
+    #ifdef RADIO_CFG_DEBUG
+        OS_printf("RADIO_SendData: Sending %d bytes: ", data_length);
+        for (uint8_t i = 0; i < data_length; i++)
+        {
+            OS_printf("%02x", data[i]);
+        }
+        OS_printf("\n");
+    #endif
     
     /* Send data command with data as payload */
     return RADIO_CommandDevice(device, RADIO_DEVICE_SEND_CMD, data_length, data);
@@ -297,16 +306,6 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint8_t max_length,
     #endif
     /* Read entire response in a single call. The simulator may pad with zeros up to max_length. */
     status = spi_read(device, rx_buffer, max_length);
-    #ifdef RADIO_CFG_DEBUG
-    OS_printf("RADIO_ReceiveData: SPI read returned %d bytes\n", status);
-    if (status > 0) {
-        OS_printf("RADIO_ReceiveData: SPI buffer: ");
-        for (int i = 0; i < status && i < 16; ++i) {
-            OS_printf("%02X ", rx_buffer[i]);
-        }
-        OS_printf("\n");
-    }
-    #endif
     if (status <= 0)
     {
         OS_printf("RADIO_ReceiveData: SPI read failed with error %d\n", status);

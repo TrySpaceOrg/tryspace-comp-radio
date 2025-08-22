@@ -614,7 +614,14 @@ int radio_sim_init(radio_sim_state_t* state)
 
     memset(&state->ground_tx_addr, 0, sizeof(state->ground_tx_addr));
     state->ground_tx_addr.sin_family = AF_INET;
-    state->ground_tx_addr.sin_addr.s_addr = inet_addr("0.0.0.0");
+    // Hostname resolution for ground station
+    struct hostent* ground_host = gethostbyname("tryspace-gsw");
+    if (ground_host && ground_host->h_addrtype == AF_INET && ground_host->h_addr_list[0]) {
+        memcpy(&state->ground_tx_addr.sin_addr, ground_host->h_addr_list[0], ground_host->h_length);
+    } else {
+        printf("Failed to resolve ground station hostname 'tryspace-gsw', using INADDR_ANY\n");
+        state->ground_tx_addr.sin_addr.s_addr = INADDR_ANY;
+    }
     state->ground_tx_addr.sin_port = htons(RADIO_CFG_UDP_GROUND_TX_PORT);
 
     // Bind RX socket

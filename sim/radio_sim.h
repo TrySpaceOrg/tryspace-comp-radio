@@ -2,10 +2,13 @@
 #define RADIO_SIM_H
 
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/time.h>
 
 #include "radio_device.h"
 #include "simulith.h"

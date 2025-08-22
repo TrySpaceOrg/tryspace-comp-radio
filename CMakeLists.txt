@@ -14,9 +14,11 @@ include_directories(${APPLICATION_PLATFORM_INC_LIST})
 
 aux_source_directory(src APP_SRC_FILES)
 
+include_directories(${APPLICATION_PLATFORM_INC_LIST})
+
 # Create the app module
-add_cfe_app(radio ${APP_SRC_FILES}
-            shared/radio_device.c)
+add_cfe_app(radio ${APP_SRC_FILES} shared/radio_device.c)
+add_cfe_tables(radio tables/radio_sub.c)
 
 # If UT is enabled, then add the tests from the subdirectory
 # Note that this is an app, and therefore does not provide
