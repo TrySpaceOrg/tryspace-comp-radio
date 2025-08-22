@@ -587,6 +587,16 @@ void RADIO_Service(void)
         /* Receive data from the radio into the tail of the buffer */
         RADIO_ReceiveData(&RADIO_AppData.RadioSpi, RADIO_AppData.ReceiveBuffer + RADIO_AppData.ReceiveBuffLength,
                            RADIO_MAX_PAYLOAD_SIZE - RADIO_AppData.ReceiveBuffLength, &actual_length);
+        #ifdef RADIO_CFG_DEBUG
+        OS_printf("RADIO_Service: Received %u bytes from SPI\n", actual_length);
+        if (actual_length > 0) {
+            OS_printf("RADIO_Service: SPI payload: ");
+            for (uint32 i = 0; i < actual_length; ++i) {
+                OS_printf("%02X ", RADIO_AppData.ReceiveBuffer[RADIO_AppData.ReceiveBuffLength + i]);
+            }
+            OS_printf("\n");
+        }
+        #endif
         if (actual_length == 0)
         {
             /* No more data available from device */
@@ -595,6 +605,9 @@ void RADIO_Service(void)
 
         /* Advance the buffer length, but guard against overflow */
         RADIO_AppData.ReceiveBuffLength += actual_length;
+        #ifdef RADIO_CFG_DEBUG
+        OS_printf("RADIO_Service: Buffer length after append: %u\n", RADIO_AppData.ReceiveBuffLength);
+        #endif
         if (RADIO_AppData.ReceiveBuffLength > RADIO_MAX_PAYLOAD_SIZE)
         {
             /* Buffer overflow - drop contents and report error */
@@ -609,23 +622,34 @@ void RADIO_Service(void)
         while (RADIO_AppData.ReceiveBuffLength >= sizeof(CFE_MSG_CommandHeader_t))
         {
             SBBufPtr = (CFE_SB_Buffer_t *)RADIO_AppData.ReceiveBuffer;
-
-                /* Get the size from the message header */
-                CFE_MSG_Size_t msg_size = 0;
-                CFE_Status_t get_size_status = CFE_MSG_GetSize((CFE_MSG_Message_t *)&SBBufPtr->Msg, &msg_size);
-                if (get_size_status != CFE_SUCCESS)
-                {
-                    /* Malformed header or error extracting size; drop buffer */
-                    RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-                    CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
-                                      "RADIO: Failed to get message size from header, rc=%d", (int)get_size_status);
-                    RADIO_AppData.ReceiveBuffLength = 0;
-                    break;
-                }
+            CFE_MSG_Size_t msg_size = 0;
+            CFE_Status_t get_size_status = CFE_MSG_GetSize((CFE_MSG_Message_t *)&SBBufPtr->Msg, &msg_size);
+            #ifdef RADIO_CFG_DEBUG
+            OS_printf("RADIO_Service: Trying to extract CFE message, header size=%zu, buffer size=%u\n",
+                      sizeof(CFE_MSG_CommandHeader_t), RADIO_AppData.ReceiveBuffLength);
+            OS_printf("RADIO_Service: Header bytes: ");
+            for (uint32 i = 0; i < sizeof(CFE_MSG_CommandHeader_t) && i < RADIO_AppData.ReceiveBuffLength; ++i) {
+                OS_printf("%02X ", RADIO_AppData.ReceiveBuffer[i]);
+            }
+            OS_printf("\n");
+            OS_printf("RADIO_Service: get_size_status=%d, msg_size=%zu\n", get_size_status, (size_t)msg_size);
+            #endif
+            if (get_size_status != CFE_SUCCESS)
+            {
+                /* Malformed header or error extracting size; drop buffer */
+                RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+                CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                                  "RADIO: Failed to get message size from header, rc=%d", (int)get_size_status);
+                RADIO_AppData.ReceiveBuffLength = 0;
+                break;
+            }
 
             /* If the header reports a size larger than we currently have, wait for more data */
             if (msg_size > RADIO_AppData.ReceiveBuffLength)
             {
+                #ifdef RADIO_CFG_DEBUG
+                OS_printf("RADIO_Service: Incomplete message, need %zu bytes, have %u\n", (size_t)msg_size, RADIO_AppData.ReceiveBuffLength);
+                #endif
                 break; /* need more bytes */
             }
 
@@ -633,12 +657,18 @@ void RADIO_Service(void)
             if (CFE_SB_TransmitMsg((CFE_MSG_Message_t *)SBBufPtr, true) == CFE_SUCCESS)
             {
                 RADIO_AppData.HkTelemetryPkt.DeviceCount++;
+                #ifdef RADIO_CFG_DEBUG
+                OS_printf("RADIO_Service: Transmitted CFE message of size %zu\n", (size_t)msg_size);
+                #endif
             }
             else
             {
                 RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
                 CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
                                   "RADIO: Failed to transmit received message to SB");
+                #ifdef RADIO_CFG_DEBUG
+                OS_printf("RADIO_Service: Failed to transmit CFE message\n");
+                #endif
             }
 
             /* Remove the processed message from the front of the buffer */
@@ -648,6 +678,9 @@ void RADIO_Service(void)
                         RADIO_AppData.ReceiveBuffLength - msg_size);
             }
             RADIO_AppData.ReceiveBuffLength -= msg_size;
+            #ifdef RADIO_CFG_DEBUG
+            OS_printf("RADIO_Service: Buffer length after message extraction: %u\n", RADIO_AppData.ReceiveBuffLength);
+            #endif
         }
 
         /* Decrement receive attempts and continue to try to read more packets */

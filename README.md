@@ -52,6 +52,11 @@ Response formats:
   * uint32, bytes received
   * uint32, bytes sent
   * uint8, trailer, 0x11
+* Received data
+  * uint8, header, 0xAA
+  * uint8, payload length in bytes (0-255)
+  * uint8 array, payload
+  * uint8, trailer, 0x11
 
 ### Command Line Interface
 The CLI can be configured to connect to either hardware (serial/USB) or the simulation backend. This enables direct checkouts without interfering with other systems.

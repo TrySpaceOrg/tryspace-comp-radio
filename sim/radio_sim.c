@@ -43,7 +43,11 @@ static void* udp_ground_thread(void* arg)
             
             if (bytes_received > 0)
             {
-                printf("Received %zd bytes from ground station\n", bytes_received);
+                //printf("Received %zd bytes from ground station:\n  ", bytes_received);
+                //for (size_t i = 0; i < bytes_received && i < 10; i++) {
+                //    printf("0x%02X ", buffer[i]);
+                //}
+                //printf("\n");
                 
                 // Write to RX buffer if radio is powered and in RX or DUPLEX mode
                 if (gpio_power_state.value && 
@@ -217,7 +221,7 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
         printf("0x%02X ", data[i]);
     }
     printf("\n");
-    
+
     if (!state || !data || length < 4)  // Minimum: header(1) + cmd(1) + len(1) + trailer(1)
     {
         printf("Invalid SPI command parameters\n");
@@ -237,45 +241,46 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
     uint8_t payload_len = data[2];
     
     // Validate header
-    if (header != RADIO_DEVICE_HDR)
+    if (data[0] != RADIO_DEVICE_HDR)
     {
-        printf("Invalid command header: 0x%02X\n", header);
+        printf("Invalid command header: 0x%02X\n", data[0]);
         return;
     }
-    
-    // Validate length
-    if (length < (size_t) (4 + payload_len))  // header + cmd + len + payload + trailer
+
+    command = data[1];
+    payload_len = data[2];
+
+    /* Validate that the provided buffer contains the full command (header+cmd+len+payload+trailer) */
+    size_t expected_len = 4 + payload_len; /* total bytes in frame */
+    if (length < expected_len)
     {
-        printf("Command length mismatch\n");
+        printf("Command length mismatch (have %zu, need %zu)\n", length, expected_len);
         return;
     }
-    
+
     // Validate trailer
-    uint8_t trailer = data[length-1];
+    uint8_t trailer = data[expected_len - 1];
     if (trailer != RADIO_DEVICE_TRAILER)
     {
         printf("Invalid command trailer: 0x%02X\n", trailer);
         return;
     }
-    
-    printf("SPI Command: 0x%02X, Length: %d\n", command, payload_len);
-    
-    // Check if radio is powered
+
+    // Check if radio is powered on - if not, drop all commands silently
     if (!gpio_power_state.value)
     {
-        printf("Radio not powered - ignoring command\n");
+        printf("Radio not powered - dropping SPI command\n");
         return;
     }
-    
-    // Process command
+
+    /* Handle commands */
     switch (command)
     {
         case RADIO_DEVICE_NOOP_CMD:
-            printf("Processing NOOP command\n");
+            // No operation
             break;
-            
+
         case RADIO_DEVICE_REQ_HK_CMD:
-            printf("Processing housekeeping request\n");
             pthread_mutex_lock(&state->buffer_mutex);
             state->hk.BytesInRxBuffer = radio_sim_get_rx_buffer_count(state);
             state->hk.BytesReceived = state->bytes_received;
@@ -283,89 +288,115 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
             pthread_mutex_unlock(&state->buffer_mutex);
             radio_sim_send_housekeeping(state);
             break;
-            
+
         case RADIO_DEVICE_SET_CFG_CMD:
             if (payload_len == RADIO_CFG_PAYLOAD_SIZE)
             {
-                printf("Processing configuration command\n");
                 state->config.Mode = data[3];
                 state->config.RxSpeedSetting = data[4];
                 state->config.RxWavelengthSetting = data[5];
                 state->config.TxSpeedSetting = data[6];
                 state->config.TxWavelengthSetting = data[7];
-                
-                // Update housekeeping
+
+                /* Update housekeeping mirrors */
                 state->hk.Mode = state->config.Mode;
                 state->hk.RxSpeedSetting = state->config.RxSpeedSetting;
                 state->hk.RxWavelengthSetting = state->config.RxWavelengthSetting;
                 state->hk.TxSpeedSetting = state->config.TxSpeedSetting;
                 state->hk.TxWavelengthSetting = state->config.TxWavelengthSetting;
-                
-                printf("Mode: %d, RX: %d/%d, TX: %d/%d\n",
-                       state->config.Mode, state->config.RxSpeedSetting, state->config.RxWavelengthSetting,
-                       state->config.TxSpeedSetting, state->config.TxWavelengthSetting);
-            }
-            break;
-            
-        case RADIO_DEVICE_RECEIVE_CMD:
-            if (payload_len == RADIO_RECEIVE_PAYLOAD_SIZE)
-            {
-                uint8_t max_bytes = data[3];
-                printf("Processing receive command for %d bytes\n", max_bytes);
-                
-                pthread_mutex_lock(&state->buffer_mutex);
-                
-                // Read from RX buffer
-                uint8_t response[RADIO_MAX_PAYLOAD_SIZE + 4];
-                response[0] = RADIO_DEVICE_HDR;
-                response[1] = command;  // Echo command
-                
-                uint8_t actual_bytes = radio_sim_read_from_rx_buffer(state, &response[3], max_bytes);
-                response[2] = actual_bytes;  // Actual payload length
-                
-                // Add trailer
-                response[3 + actual_bytes] = RADIO_DEVICE_TRAILER;
-                
-                radio_sim_update_interrupt(state);
-                pthread_mutex_unlock(&state->buffer_mutex);
-                
-                radio_sim_send_response(state, response, 4 + actual_bytes);
-                printf("Sent %d bytes to client\n", actual_bytes);
-            }
-            break;
-            
-        case RADIO_DEVICE_SEND_CMD:
-            printf("Processing send command with %d bytes\n", payload_len);
-            
-            // Send data to ground station if in TX or DUPLEX mode
-            if (state->config.Mode == RADIO_SIM_MODE_TX || state->config.Mode == RADIO_SIM_MODE_DUPLEX)
-            {
-                ssize_t sent = sendto(state->udp_tx_socket, &data[3], payload_len, 0,
-                                     (struct sockaddr*)&state->ground_tx_addr, sizeof(state->ground_tx_addr));
-                if (sent > 0)
-                {
-                    pthread_mutex_lock(&state->buffer_mutex);
-                    state->bytes_sent += sent;
-                    pthread_mutex_unlock(&state->buffer_mutex);
-                    printf("Sent %zd bytes to ground station\n", sent);
-                }
-                else
-                {
-                    printf("Failed to send to ground station: %s\n", strerror(errno));
-                }
             }
             else
             {
-                printf("Radio not in TX mode - dropping data\n");
+                printf("Radio sim: SET_CFG_CMD with invalid payload_len=%d\n", payload_len);
             }
             break;
-            
+
+        case RADIO_DEVICE_RECEIVE_CMD:
+            if (payload_len >= 1)
+            {
+                uint8_t requested = data[3];
+                uint32_t available;
+                uint8_t to_send;
+
+                pthread_mutex_lock(&state->buffer_mutex);
+                available = radio_sim_get_rx_buffer_count(state);
+                to_send = (available > requested) ? requested : (uint8_t)available;
+
+                uint8_t tx_buf[256];
+                memset(tx_buf, 0, sizeof(tx_buf));
+
+                /* Frame: header, length, payload..., trailer */
+                tx_buf[0] = RADIO_DEVICE_HDR;
+                tx_buf[1] = to_send;
+
+                if (to_send > 0)
+                {
+                    int read = radio_sim_read_from_rx_buffer(state, &tx_buf[2], to_send);
+                    if (read != to_send)
+                    {
+                        to_send = (uint8_t)read;
+                        tx_buf[1] = to_send;
+                    }
+                }
+
+                tx_buf[2 + to_send] = RADIO_DEVICE_TRAILER;
+
+                /* Debug print: show reply buffer and length */
+                printf("radio_sim: RECEIVE_CMD reply: requested=%d, to_send=%d, send_len=%d\n", requested, to_send, requested);
+                printf("radio_sim: reply buffer: ");
+                for (int i = 0; i < requested && i < 32; ++i) {
+                    printf("%02X ", tx_buf[i]);
+                }
+                printf("\n");
+
+                /* Send exactly 'requested' bytes so caller reading 'requested' bytes gets frame + padding */
+                int send_len = requested;
+                if (send_len > 0)
+                {
+                    simulith_transport_send(&g_spi_device, tx_buf, send_len);
+                }
+
+                state->hk.BytesSent += to_send;
+                pthread_mutex_unlock(&state->buffer_mutex);
+            }
+            break;
+
+        case RADIO_DEVICE_SEND_CMD:
+            if (payload_len > 0)
+            {
+                /* Count bytes received from host */
+                state->hk.BytesReceived += payload_len;
+
+                /* Forward to ground if in TX/DUPLEX */
+                if (state->config.Mode == RADIO_SIM_MODE_TX || state->config.Mode == RADIO_SIM_MODE_DUPLEX)
+                {
+                    ssize_t sent = sendto(state->udp_tx_socket, &data[3], payload_len, 0,
+                                         (struct sockaddr*)&state->ground_tx_addr, sizeof(state->ground_tx_addr));
+                    if (sent > 0)
+                    {
+                        pthread_mutex_lock(&state->buffer_mutex);
+                        state->bytes_sent += sent;
+                        state->hk.BytesSent += sent;
+                        pthread_mutex_unlock(&state->buffer_mutex);
+                    }
+                    else
+                    {
+                        printf("Failed to send to ground station: %s\n", strerror(errno));
+                    }
+                }
+                else
+                {
+                    printf("Radio not in TX mode - dropping data\n");
+                }
+            }
+            break;
+
         default:
             printf("Unknown command: 0x%02X\n", command);
             break;
     }
-    
-    // Increment command counter
+
+    /* Increment command counter */
     state->hk.CommandCounter++;
 }
 
@@ -601,8 +632,11 @@ int radio_sim_init(radio_sim_state_t* state)
     
     // Initialize default values
     state->hk.CommandCounter = 0;
-    state->hk.Mode = RADIO_SIM_MODE_SLEEP;
+    state->hk.Mode = RADIO_SIM_MODE_DUPLEX;
     state->hk.GroundLock = 0;
+
+    state->config.Mode = RADIO_SIM_MODE_DUPLEX;
+    
     state->interrupt_asserted = 0;
     state->last_update_time = 0.0;
     

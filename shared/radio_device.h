@@ -27,7 +27,7 @@
 #define RADIO_MODE_RX     2
 #define RADIO_MODE_DUPLEX 3
 
-/* Maximum payload sizes */
+/* Device command payload sizes */
 #define RADIO_MAX_PAYLOAD_SIZE 255
 #define RADIO_CFG_PAYLOAD_SIZE 5
 #define RADIO_RECEIVE_PAYLOAD_SIZE 1
