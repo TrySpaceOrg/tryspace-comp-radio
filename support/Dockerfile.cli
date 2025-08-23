@@ -1,0 +1,10 @@
+FROM tryspaceorg/tryspace-lab:0.0.0
+
+# Copy built files into the image
+COPY ./build /app
+
+# Set working directory
+WORKDIR /app
+
+# Set command to run
+CMD ["/app/radio_cli"]
