@@ -83,7 +83,6 @@ void  RADIO_ProcessCommandPacket(void);
 void  RADIO_ProcessGroundCommand(void);
 void  RADIO_ProcessTelemetryRequest(void);
 void  RADIO_ReportHousekeeping(void);
-void  RADIO_ReportDeviceTelemetry(void);
 void  RADIO_ResetCounters(void);
 void  RADIO_Enable(void);
 void  RADIO_Disable(void);

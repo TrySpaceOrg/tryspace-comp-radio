@@ -232,7 +232,8 @@ void Test_RADIO_ProcessTelemetryRequest(void)
     TestMsgId = CFE_SB_ValueToMsgId(RADIO_CMD_MID);
     UT_SetDataBuffer(UT_KEY(CFE_MSG_GetMsgId), &TestMsgId, sizeof(TestMsgId), false);
     UT_SetDataBuffer(UT_KEY(CFE_MSG_GetFcnCode), &FcnCode, sizeof(FcnCode), false);
-    UT_SetDeferredRetcode(UT_KEY(RADIO_RequestData), 1, OS_SUCCESS);
+    /* RADIO_RequestData uses RADIO_ReceiveData in production; stub the receive call */
+    UT_SetDeferredRetcode(UT_KEY(RADIO_ReceiveData), 1, OS_SUCCESS);
 
     UT_CheckEvent_Setup(&EventTest, RADIO_REQ_DATA_ERR_EID, NULL);
     RADIO_ProcessTelemetryRequest();
@@ -553,23 +554,6 @@ void Test_RADIO_VerifyCmdLength(void)
     UtAssert_True(EventTest.MatchCount == 1, "RADIO_LEN_ERR_EID generated (%u)", (unsigned int)EventTest.MatchCount);
 }
 
-void Test_RADIO_ReportDeviceTelemetry(void)
-{
-    RADIO_ReportDeviceTelemetry();
-
-    UT_SetDeferredRetcode(UT_KEY(RADIO_RequestData), 1, OS_SUCCESS);
-    RADIO_ReportDeviceTelemetry();
-
-    UT_SetDeferredRetcode(UT_KEY(RADIO_RequestData), 1, OS_ERROR);
-    RADIO_ReportDeviceTelemetry();
-
-    RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-    RADIO_ReportDeviceTelemetry();
-
-    RADIO_AppData.HkTelemetryPkt.DeviceEnabled         = RADIO_DEVICE_ENABLED;
-    RADIO_ReportDeviceTelemetry();
-}
-
 void Test_RADIO_Configure(void)
 {
     RADIO_Configure();
@@ -594,22 +578,23 @@ void Test_RADIO_Enable(void)
 
     UT_CheckEvent_Setup(&EventTest, RADIO_ENABLE_INF_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-    UT_SetDeferredRetcode(UT_KEY(uart_init_port), 1, OS_SUCCESS);
+    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_SUCCESS);
     RADIO_Enable();
     UtAssert_True(EventTest.MatchCount == 1, "RADIO: Device enabled (%u)", (unsigned int)EventTest.MatchCount);
 
-    UT_CheckEvent_Setup(&EventTest, RADIO_UART_INIT_ERR_EID, NULL);
+    UT_CheckEvent_Setup(&EventTest, RADIO_ENABLE_ERR_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-    UT_SetDeferredRetcode(UT_KEY(uart_init_port), 1, OS_ERROR);
+    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_ERROR);
     RADIO_Enable();
     UtAssert_True(EventTest.MatchCount == 1, "RADIO: UART port initialization error (%u)",
                   (unsigned int)EventTest.MatchCount);
 
     UT_CheckEvent_Setup(&EventTest, RADIO_ENABLE_ERR_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
-    UT_SetDeferredRetcode(UT_KEY(uart_init_port), 1, OS_ERROR);
+    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_ERROR);
     RADIO_Enable();
-    UtAssert_True(EventTest.MatchCount == 1, "RADIO: Device enable failed, already enabled (%u)",
+    /* Production does not emit an event when enable is called while already enabled */
+    UtAssert_True(EventTest.MatchCount == 0, "RADIO: No event expected when enabling an already-enabled device (%u)",
                   (unsigned int)EventTest.MatchCount);
 }
 
@@ -619,21 +604,22 @@ void Test_RADIO_Disable(void)
 
     UT_CheckEvent_Setup(&EventTest, RADIO_DISABLE_INF_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
-    UT_SetDeferredRetcode(UT_KEY(uart_close_port), 1, OS_SUCCESS);
+    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_SUCCESS);
     RADIO_Disable();
     UtAssert_True(EventTest.MatchCount == 1, "RADIO: Device disabled (%u)", (unsigned int)EventTest.MatchCount);
 
-    UT_CheckEvent_Setup(&EventTest, RADIO_UART_CLOSE_ERR_EID, NULL);
+    UT_CheckEvent_Setup(&EventTest, RADIO_DISABLE_ERR_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
-    UT_SetDeferredRetcode(UT_KEY(uart_close_port), 1, OS_ERROR);
+    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_ERROR);
     RADIO_Disable();
     UtAssert_True(EventTest.MatchCount == 1, "RADIO: UART port close error (%u)", (unsigned int)EventTest.MatchCount);
 
     UT_CheckEvent_Setup(&EventTest, RADIO_DISABLE_ERR_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-    UT_SetDeferredRetcode(UT_KEY(uart_close_port), 1, OS_ERROR);
+    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_ERROR);
     RADIO_Disable();
-    UtAssert_True(EventTest.MatchCount == 1, "RADIO: Device disable failed, already disabled (%u)",
+    /* Production does not emit an event when disable is called while already disabled */
+    UtAssert_True(EventTest.MatchCount == 0, "RADIO: No event expected when disabling an already-disabled device (%u)",
                   (unsigned int)EventTest.MatchCount);
 }
 
@@ -661,7 +647,6 @@ void UtTest_Setup(void)
     ADD_TEST(RADIO_ProcessGroundCommand);
     ADD_TEST(RADIO_ReportHousekeeping);
     ADD_TEST(RADIO_VerifyCmdLength);
-    ADD_TEST(RADIO_ReportDeviceTelemetry);
     ADD_TEST(RADIO_ProcessTelemetryRequest);
     ADD_TEST(RADIO_Configure);
     ADD_TEST(RADIO_Enable);

@@ -18,7 +18,7 @@
 #    code units.
 #
 
-add_cfe_coverage_stubs(radio-internal stubs/radio_device_stubs.c stubs/libuart_stubs.c) 
+add_cfe_coverage_stubs(radio-internal stubs/libspi_stubs.c stubs/libgpio_stubs.c) 
 target_link_libraries(coverage-radio-internal-stubs ut_core_api_stubs ut_assert)
 target_include_directories(coverage-radio-internal-stubs PUBLIC $<TARGET_PROPERTY:radio,INCLUDE_DIRECTORIES>)
 
@@ -41,12 +41,14 @@ include_directories(${PROJECT_SOURCE_DIR}/../../fsw/osal/ut_assert/inc)
 add_cfe_coverage_test(radio ALL 
     "coveragetest/coveragetest_radio_app.c"
     "../src/radio_app.c"
+    "../shared/radio_device.c"
 )
 
 add_cfe_coverage_test(radio DEVICE 
     "coveragetest/coveragetest_radio_device.c"
     "../shared/radio_device.c"
-    "stubs/libuart_stubs.c"
+    "stubs/libspi_stubs.c"
+    "stubs/libgpio_stubs.c"
 )
 
 add_cfe_coverage_dependency(radio ALL radio-internal)

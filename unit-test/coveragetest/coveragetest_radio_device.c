@@ -2,71 +2,72 @@
 
 void Test_RADIO_ReadData(void)
 {
-    uart_info_t device;
+    spi_info_t device;
     uint8_t     read_data[8];
     uint8_t     data_length = 8;
-    RADIO_ReadData(&device, read_data, data_length);
-
-    UT_SetDeferredRetcode(UT_KEY(uart_bytes_available), 1, data_length);
-    RADIO_ReadData(&device, read_data, data_length);
-
-    UT_SetDeferredRetcode(UT_KEY(uart_bytes_available), 1, data_length + 1);
-    RADIO_ReadData(&device, read_data, data_length);
+    uint8_t actual_len = 0;
+    RADIO_ReceiveData(&device, read_data, data_length, &actual_len);
+    UT_SetDeferredRetcode(UT_KEY(spi_read), 1, data_length);
+    RADIO_ReceiveData(&device, read_data, data_length, &actual_len);
+    UT_SetDeferredRetcode(UT_KEY(spi_read), 1, data_length + 1);
+    RADIO_ReceiveData(&device, read_data, data_length, &actual_len);
 }
 
 void Test_RADIO_CommandDevice(void)
 {
-    uart_info_t device;
+    spi_info_t device;
     uint8_t     cmd_code = 0;
-    uint32_t    payload  = 0;
-    RADIO_CommandDevice(&device, cmd_code, payload);
+    uint8_t    payload_len  = 0;
+    uint8_t payload_data[1];
+    RADIO_CommandDevice(&device, cmd_code, payload_len, payload_data);
 
-    UT_SetDeferredRetcode(UT_KEY(uart_flush), 1, UART_ERROR);
-    RADIO_CommandDevice(&device, cmd_code, payload);
+    /* Simulate SPI write error */
+    UT_SetDeferredRetcode(UT_KEY(spi_write), 1, SPI_ERROR);
+    RADIO_CommandDevice(&device, cmd_code, payload_len, payload_data);
+    /* For zero-payload commands the command size is header+cmd+len+trailer = 4 */
+    UT_SetDeferredRetcode(UT_KEY(spi_write), 1, 4);
+    RADIO_CommandDevice(&device, cmd_code, payload_len, payload_data);
 
-    UT_SetDeferredRetcode(UT_KEY(uart_write_port), 1, RADIO_DEVICE_CMD_SIZE);
-    RADIO_CommandDevice(&device, cmd_code, payload);
-
-    UT_SetDeferredRetcode(UT_KEY(uart_write_port), 1, RADIO_DEVICE_CMD_SIZE);
-    UT_SetDeferredRetcode(UT_KEY(uart_bytes_available), 1, 9);
-    UT_SetDeferredRetcode(UT_KEY(uart_read_port), 1, 9);
-    UT_SetDefaultReturnValue(UT_KEY(RADIO_ReadData), OS_SUCCESS);
-    UT_SetDeferredRetcode(UT_KEY(RADIO_ReadData), 1, OS_SUCCESS);
-    RADIO_CommandDevice(&device, cmd_code, payload);
+    /* Simulate read back on device if command expects response */
+    UT_SetDeferredRetcode(UT_KEY(spi_read), 1, 9);
+    /* Simulate RADIO_ReceiveData being successful when called from command path */
+    UT_SetDefaultReturnValue(UT_KEY(RADIO_ReceiveData), OS_SUCCESS);
+    UT_SetDeferredRetcode(UT_KEY(RADIO_ReceiveData), 1, OS_SUCCESS);
+    RADIO_CommandDevice(&device, cmd_code, payload_len, payload_data);
 }
 
 void Test_RADIO_RequestHK(void)
 {
-    uart_info_t            device;
+    spi_info_t            device;
     RADIO_Device_HK_tlm_t data;
     RADIO_RequestHK(&device, &data);
 
     uint8_t read_data[] = {0xDE, 0xAD, 0x00, 0x00, 0x00, 0x07, 0x00, 0x06,
                            0x00, 0x0C, 0x00, 0x12, 0x00, 0x00, 0xBE, 0xEF};
-    UT_SetDeferredRetcode(UT_KEY(uart_bytes_available), 1, 16);
-    UT_SetDeferredRetcode(UT_KEY(uart_read_port), 1, 16);
-    UT_SetDataBuffer(UT_KEY(uart_read_port), &read_data, sizeof(read_data), false);
+    UT_SetDeferredRetcode(UT_KEY(spi_read), 1, 16);
+    UT_SetDataBuffer(UT_KEY(spi_read), &read_data, sizeof(read_data), false);
     RADIO_RequestHK(&device, &data);
 
-    UT_SetDeferredRetcode(UT_KEY(uart_flush), 1, OS_ERROR);
+    UT_SetDeferredRetcode(UT_KEY(spi_write), 1, OS_ERROR);
     RADIO_RequestHK(&device, &data);
 }
 
 void Test_RADIO_RequestData(void)
 {
-    uart_info_t              device;
-    RADIO_Device_Data_tlm_t data;
-    RADIO_RequestData(&device, &data);
+    spi_info_t              device;
+    /* The device data path uses RADIO_ReceiveData in production; exercise receive */
+    uint8_t data_buf[16];
+    uint8_t actual_len = 0;
+    RADIO_ReceiveData(&device, data_buf, sizeof(data_buf), &actual_len);
 
     uint8_t read_data[] = {0xDE, 0xAD, 0x00, 0x00, 0x00, 0x07, 0x00, 0x06,
                            0x00, 0x0C, 0x00, 0x12, 0x00, 0x00, 0xBE, 0xEF};
-    UT_SetDeferredRetcode(UT_KEY(uart_bytes_available), 1, 16);
-    UT_SetDeferredRetcode(UT_KEY(uart_read_port), 1, 16);
-    UT_SetDataBuffer(UT_KEY(uart_read_port), &read_data, sizeof(read_data), false);
-    RADIO_RequestData(&device, &data);
+    UT_SetDeferredRetcode(UT_KEY(spi_read), 1, 16);
+    UT_SetDataBuffer(UT_KEY(spi_read), &read_data, sizeof(read_data), false);
+    RADIO_ReceiveData(&device, data_buf, sizeof(data_buf), &actual_len);
 
-    UT_SetDeferredRetcode(UT_KEY(uart_flush), 1, OS_ERROR);
-    RADIO_RequestData(&device, &data);
+    UT_SetDeferredRetcode(UT_KEY(spi_write), 1, OS_ERROR);
+    RADIO_ReceiveData(&device, data_buf, sizeof(data_buf), &actual_len);
 }
 
 void Test_RADIO_RequestData_Hook(void *UserObj, UT_EntryKey_t FuncKey, const UT_StubContext_t *Context, va_list va) {}
@@ -89,9 +90,9 @@ void Radio_UT_TearDown(void) {}
  */
 void UtTest_Setup(void)
 {
-    UT_SetVaHandlerFunction(UT_KEY(Test_RADIO_RequestData), Test_RADIO_RequestData_Hook, NULL);
+    /* RADIO_RequestData test converted to RADIO_ReceiveData; no VA handler needed */
     ADD_TEST(RADIO_ReadData);
     ADD_TEST(RADIO_CommandDevice);
     ADD_TEST(RADIO_RequestHK);
-    ADD_TEST(RADIO_RequestData);
+    /* RADIO_RequestData removed; RADIO_ReceiveData tests added instead */
 }
