@@ -87,6 +87,8 @@ void  RADIO_ResetCounters(void);
 void  RADIO_Enable(void);
 void  RADIO_Disable(void);
 void  RADIO_Configure(void);
+void  RADIO_ServiceUplink(void);
+void  RADIO_ServiceDownlink(void);
 void  RADIO_Service(void);
 int32 RADIO_VerifyCmdLength(CFE_MSG_Message_t *msg, uint16 expected_length);
 
