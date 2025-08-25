@@ -5,7 +5,7 @@ void Test_RADIO_ReadData(void)
     spi_info_t device;
     uint8_t     read_data[8];
     uint8_t     data_length = 8;
-    uint8_t actual_len = 0;
+    uint16_t actual_len = 0;
     RADIO_ReceiveData(&device, read_data, data_length, &actual_len);
     UT_SetDeferredRetcode(UT_KEY(spi_read), 1, data_length);
     RADIO_ReceiveData(&device, read_data, data_length, &actual_len);
@@ -57,7 +57,7 @@ void Test_RADIO_RequestData(void)
     spi_info_t              device;
     /* The device data path uses RADIO_ReceiveData in production; exercise receive */
     uint8_t data_buf[16];
-    uint8_t actual_len = 0;
+    uint16_t actual_len = 0;
     RADIO_ReceiveData(&device, data_buf, sizeof(data_buf), &actual_len);
 
     uint8_t read_data[] = {0xDE, 0xAD, 0x00, 0x00, 0x00, 0x07, 0x00, 0x06,

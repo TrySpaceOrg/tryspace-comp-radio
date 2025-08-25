@@ -112,7 +112,7 @@ int32_t RADIO_CheckInterrupt(gpio_info_t *interrupt_gpio, uint8_t *interrupt_sta
 int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint8_t payload_len, uint8_t *payload)
 {
     int32_t status = OS_SUCCESS;
-    uint8_t tx_buffer[RADIO_MAX_PAYLOAD_SIZE + 5]; /* Header + cmd + len + payload + trailer */
+    uint8_t tx_buffer[RADIO_MAX_PAYLOAD_SIZE + 5]; /* header(1) + cmd(1) + len(2) + payload + trailer(1)  */
     int32_t total_len;
     
     if (device == NULL)
@@ -123,18 +123,20 @@ int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint8_t payload_len
     /* Build command packet */
     tx_buffer[0] = RADIO_DEVICE_HDR;          /* Header byte */
     tx_buffer[1] = cmd;                       /* Command */
-    tx_buffer[2] = payload_len;               /* Payload length */
+    tx_buffer[2] = (payload_len >> 8) & 0xFF; /* Payload length high byte */
+    tx_buffer[3] = payload_len & 0xFF;        /* Payload length low byte */
     
     /* Copy payload if provided */
     if (payload_len > 0 && payload != NULL)
     {
-        memcpy(&tx_buffer[3], payload, payload_len);
+        memcpy(&tx_buffer[4], payload, payload_len);
     }
     
     /* Add trailer */
-    tx_buffer[3 + payload_len] = RADIO_DEVICE_TRAILER;  /* Trailer byte */
-    
-    total_len = 4 + payload_len; /* Header(1) + cmd(1) + len(1) + payload + trailer(1) */
+    tx_buffer[4 + payload_len] = RADIO_DEVICE_TRAILER;  /* Trailer byte */
+
+    /* Calculate total length */
+    total_len = 5 + payload_len; /* header(1) + cmd(1) + len(2) + payload + trailer(1) */
     
     #ifdef RADIO_CFG_DEBUG
         OS_printf("RADIO_CommandDevice[%d] = ", total_len);
@@ -280,32 +282,33 @@ int32_t RADIO_SendData(spi_info_t *device, uint8_t *data, uint8_t data_length)
 /*
 ** Receive data command
 */
-int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint8_t max_length, uint8_t *actual_length)
+int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint16_t max_length, uint16_t *actual_length)
 {
     int32_t status = OS_SUCCESS;
-    uint8_t payload[RADIO_RECEIVE_PAYLOAD_SIZE];
+    uint8_t payload[2];
     uint8_t rx_buffer[RADIO_MAX_PAYLOAD_SIZE + 6]; /* Max response size */
-    uint8_t response_len;
+    uint16_t response_len;
     
     if (device == NULL || data == NULL || actual_length == NULL)
     {
         return OS_ERROR;
     }
     
-    /* Build receive request payload (number of bytes to receive) */
-    payload[0] = max_length;
+    /* Build receive request payload (number of bytes to receive, uint16 big-endian) */
+    payload[0] = (max_length >> 8) & 0xFF;
+    payload[1] = max_length & 0xFF;
     
-    /* Send receive command */
-    status = RADIO_CommandDevice(device, RADIO_DEVICE_RECEIVE_CMD, RADIO_RECEIVE_PAYLOAD_SIZE, payload);
+    /* Send receive command (payload_len=2) */
+    status = RADIO_CommandDevice(device, RADIO_DEVICE_RECEIVE_CMD, 2, payload);
     if (status != OS_SUCCESS)
     {
         return status;
     }
     #ifdef RADIO_CFG_DEBUG
-    OS_printf("RADIO_ReceiveData: Requesting SPI read of %d bytes\n", max_length);
+    OS_printf("RADIO_ReceiveData: Requesting SPI read of %u bytes\n", max_length);
     #endif
     /* Read entire response in a single call. The simulator may pad with zeros up to max_length. */
-    status = spi_read(device, rx_buffer, max_length);
+    status = spi_read(device, rx_buffer, max_length + 4); /* header(1)+len(2)+payload+trailer(1) */
     if (status <= 0)
     {
         OS_printf("RADIO_ReceiveData: SPI read failed with error %d\n", status);
@@ -314,8 +317,8 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint8_t max_length,
 
     int bytes_read = status;
 
-    /* Need at least header(1) + len(1) + trailer(1) => 3 bytes */
-    if (bytes_read < 3)
+    /* Need at least header(1) + len(2) + trailer(1) => 4 bytes */
+    if (bytes_read < 4)
     {
         OS_printf("RADIO_ReceiveData: Incomplete response (bytes_read=%d)\n", bytes_read);
         return OS_ERROR;
@@ -328,8 +331,8 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint8_t max_length,
         return OS_ERROR;
     }
 
-    /* Get payload length from response (second byte) */
-    response_len = rx_buffer[1];
+    /* Get payload length from response (second and third byte, big-endian) */
+    response_len = ((uint16_t)rx_buffer[1] << 8) | rx_buffer[2];
 
     /* Ensure payload length is within requested maximum */
     if (response_len > max_length)
@@ -339,7 +342,7 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint8_t max_length,
     }
 
     /* Compute index of trailer within the received buffer */
-    int trailer_index = 2 + response_len; /* header(0), len(1), payload[2..], trailer at 2+len */
+    int trailer_index = 3 + response_len; /* header(0), len(1,2), payload[3..], trailer at 3+len */
 
     /* Ensure we actually read the trailer byte (allow padding after trailer) */
     if (bytes_read <= trailer_index)
@@ -358,7 +361,7 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint8_t max_length,
     /* Copy payload to caller buffer */
     if (response_len > 0)
     {
-        memcpy(data, &rx_buffer[2], response_len);
+        memcpy(data, &rx_buffer[3], response_len);
     }
 
     *actual_length = response_len; /* caller expects payload length only */

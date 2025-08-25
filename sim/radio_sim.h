@@ -36,7 +36,7 @@
 // Buffer management
 #define RADIO_SIM_RX_BUFFER_SIZE 65536
 #define RADIO_SIM_TX_BUFFER_SIZE 65536
-#define RADIO_SIM_INTERRUPT_THRESHOLD 32768
+#define RADIO_SIM_INTERRUPT_THRESHOLD (RADIO_SIM_TX_BUFFER_SIZE / 2)
 
 // Radio simulator state
 typedef struct 

@@ -630,7 +630,7 @@ void RADIO_Configure(void)
 */
 void RADIO_ServiceUplink(void)
 {
-    uint8 actual_length = 0;
+    uint16_t actual_length = 0;
     uint32 max_rx_transactions = RADIO_CFG_MAX_RX_MSGS_PER_POLL;
     CFE_SB_Buffer_t *SBBufPtr;
 
@@ -641,10 +641,11 @@ void RADIO_ServiceUplink(void)
         RADIO_ReceiveData(&RADIO_AppData.RadioSpi, RADIO_AppData.ReceiveBuffer + RADIO_AppData.ReceiveBuffLength,
                         RADIO_MAX_PAYLOAD_SIZE - RADIO_AppData.ReceiveBuffLength, &actual_length);
         #ifdef RADIO_CFG_DEBUG
-        OS_printf("RADIO_Service: Received %u bytes from SPI\n", actual_length);
+        OS_printf("RADIO_Service: Received %u bytes from radio\n", actual_length);
         if (actual_length > 0) {
             OS_printf("RADIO_Service: SPI payload: ");
-            for (uint32 i = 0; i < actual_length; ++i) {
+            for (uint32 i = 0; i < actual_length; ++i) 
+            {
                 OS_printf("%02X ", RADIO_AppData.ReceiveBuffer[RADIO_AppData.ReceiveBuffLength + i]);
             }
             OS_printf("\n");
@@ -681,7 +682,8 @@ void RADIO_ServiceUplink(void)
             OS_printf("RADIO_Service: Trying to extract CFE message, header size=%zu, buffer size=%u\n",
                     sizeof(CFE_MSG_CommandHeader_t), RADIO_AppData.ReceiveBuffLength);
             OS_printf("RADIO_Service: Header bytes: ");
-            for (uint32 i = 0; i < sizeof(CFE_MSG_CommandHeader_t) && i < RADIO_AppData.ReceiveBuffLength; ++i) {
+            for (uint32 i = 0; i < sizeof(CFE_MSG_CommandHeader_t) && i < RADIO_AppData.ReceiveBuffLength; ++i) 
+            {
                 OS_printf("%02X ", RADIO_AppData.ReceiveBuffer[i]);
             }
             OS_printf("\n");

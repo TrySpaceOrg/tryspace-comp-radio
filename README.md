@@ -18,11 +18,11 @@ The specific command format is as follows:
   * (2) set configuration
   * (3) receive data
   * (4) send data
-* uint8, payload length in bytes (0-255)
+* uint16, payload length in bytes (0-65535)
   * (0) no operation, 0
   * (1) get housekeeping, 0
   * (2) set configuration, 5
-  * (3) receive data, 1
+  * (3) receive data, 2
   * (4) send data, data length in bytes
 * uint8 array, payload
   * (0) no operation, N/A
@@ -33,7 +33,7 @@ The specific command format is as follows:
     * uint8, rx wavelength setting (TBD)
     * uint8, tx speed setting (TBD)
     * uint8, tx wavelength setting (TBD)
-  * (3) receive length, data to receive in bytes
+  * (3) receive length, 2, data to receive in bytes
   * (4) send data, data array
 * uint8, trailer, 0x11
 
@@ -54,7 +54,7 @@ Response formats:
   * uint8, trailer, 0x11
 * Received data
   * uint8, header, 0xAA
-  * uint8, payload length in bytes (0-255)
+  * uint16, payload length in bytes (0-65535)
   * uint8 array, payload
   * uint8, trailer, 0x11
 
