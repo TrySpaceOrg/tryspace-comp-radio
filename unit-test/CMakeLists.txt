@@ -18,7 +18,13 @@
 #    code units.
 #
 
-add_cfe_coverage_stubs(radio-internal stubs/libspi_stubs.c stubs/libgpio_stubs.c) 
+add_cfe_coverage_stubs(radio-internal 
+    stubs/libspi_stubs.c 
+    stubs/libgpio_stubs.c 
+    stubs/cryptolib_stubs.c 
+    stubs/io_lib_stubs.c
+    stubs/radio_device_stubs.c
+) 
 target_link_libraries(coverage-radio-internal-stubs ut_core_api_stubs ut_assert)
 target_include_directories(coverage-radio-internal-stubs PUBLIC $<TARGET_PROPERTY:radio,INCLUDE_DIRECTORIES>)
 
@@ -29,6 +35,8 @@ include_directories(${PROJECT_SOURCE_DIR}/src)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/inc)
 include_directories(${hwlib_MISSION_DIR}/public_inc)
 include_directories(${PROJECT_SOURCE_DIR}/../../fsw/osal/ut_assert/inc)
+include_directories(${PROJECT_SOURCE_DIR}/../cryptolib/include)
+include_directories(${PROJECT_SOURCE_DIR}/../../fsw/apps/io_lib/fsw/public_inc)
 
 
 # Add a coverage test executable called "radio-ALL" that 
