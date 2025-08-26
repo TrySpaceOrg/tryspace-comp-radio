@@ -216,7 +216,7 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
                 strncpy((char*)send_data, tokens[0], RADIO_MAX_PAYLOAD_SIZE-1);
                 send_data[RADIO_MAX_PAYLOAD_SIZE-1] = '\0';
                 
-                status = RADIO_SendData(&RadioSpi, send_data, strlen((char*)send_data));
+                status = RADIO_SendData(&RadioSpi, send_data, (uint16_t)strlen((char*)send_data));
                 if (status == OS_SUCCESS)
                 {
                     OS_printf("Send data command success: \"%s\" (%d bytes)\n", send_data, (int)strlen((char*)send_data));

@@ -19,7 +19,7 @@ static void* udp_ground_thread(void* arg)
     fd_set read_fds;
     struct timeval timeout;
     uint8_t buffer[1024];
-    ssize_t bytes_received;
+    size_t bytes_received;
     struct sockaddr_in from_addr;
     socklen_t from_len;
     
@@ -43,11 +43,13 @@ static void* udp_ground_thread(void* arg)
             
             if (bytes_received > 0)
             {
-                //printf("Received %zd bytes from ground station:\n  ", bytes_received);
-                //for (size_t i = 0; i < bytes_received && i < 10; i++) {
-                //    printf("0x%02X ", buffer[i]);
-                //}
-                //printf("\n");
+                #ifdef RADIO_CFG_DEBUG
+                printf("Received %zu bytes from ground station:\n  ", bytes_received);
+                for (size_t i = 0; i < bytes_received && i < 10; i++) {
+                    printf("0x%02X ", buffer[i]);
+                }
+                printf("\n");
+                #endif
                 
                 // Write to RX buffer if radio is powered and in RX or DUPLEX mode
                 if (gpio_power_state.value && 
@@ -91,7 +93,7 @@ static void radio_sim_update_interrupt(radio_sim_state_t* state)
         }
         else
         {
-            printf("Interrupt deasserted - RX buffer has %d bytes\n", rx_count);
+            printf("Interrupt cleared - RX buffer has %d bytes\n", rx_count);
         }
     }
 }
@@ -233,7 +235,7 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
     printf("\n");
     #endif
 
-    if (!state || !data || length <= 5)  // Minimum: header(1) + cmd(1) + len(2) + trailer(1)
+    if (!state || !data || length < 5)  // Minimum: header(1) + cmd(1) + len(2) + trailer(1)
     {
         printf("Invalid SPI command parameters\n");
         return;
@@ -380,7 +382,8 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
                 /* Forward to ground if in TX/DUPLEX */
                 if (state->config.Mode == RADIO_SIM_MODE_TX || state->config.Mode == RADIO_SIM_MODE_DUPLEX)
                 {
-                    ssize_t sent = sendto(state->udp_tx_socket, &data[3], payload_len, 0,
+                    /* Payload begins at data[4] (protocol: header[0], cmd[1], len_hi[2], len_lo[3], payload[4..]) */
+                    ssize_t sent = sendto(state->udp_tx_socket, &data[4], payload_len, 0,
                                          (struct sockaddr*)&state->ground_tx_addr, sizeof(state->ground_tx_addr));
                     if (sent > 0)
                     {
@@ -628,11 +631,11 @@ int radio_sim_init(radio_sim_state_t* state)
     memset(&state->ground_tx_addr, 0, sizeof(state->ground_tx_addr));
     state->ground_tx_addr.sin_family = AF_INET;
     // Hostname resolution for ground station
-    struct hostent* ground_host = gethostbyname("tryspace-gsw");
+    struct hostent* ground_host = gethostbyname("tryspace-cryptolib");
     if (ground_host && ground_host->h_addrtype == AF_INET && ground_host->h_addr_list[0]) {
         memcpy(&state->ground_tx_addr.sin_addr, ground_host->h_addr_list[0], ground_host->h_length);
     } else {
-        printf("Failed to resolve ground station hostname 'tryspace-gsw', using INADDR_ANY\n");
+        printf("Failed to resolve ground station hostname 'tryspace-cryptolib', using INADDR_ANY\n");
         state->ground_tx_addr.sin_addr.s_addr = INADDR_ANY;
     }
     state->ground_tx_addr.sin_port = htons(RADIO_CFG_UDP_GROUND_TX_PORT);

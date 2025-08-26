@@ -15,7 +15,15 @@
 #include "radio_version.h"
 #include "hwlib.h"
 
-//#include <string.h>
+#include "cryptolib.h"
+#include "io_lib.h"
+#include "sa_interface.h"
+#include "tc_sync.h"
+#include "tctf.h"
+#include "tm_sdlp.h"
+#include "tm_sync.h"
+
+#include <string.h>
 
 /*
 ** Specified pipe depth - how many messages will be queued in the pipe
@@ -60,7 +68,7 @@ typedef struct
     ** Device data
     */
     uint8_t ReceiveBuffer[1024]; /* Buffer for receiving data */
-    uint32_t ReceiveBuffLength;  /* Length of data in receive buffer */
+    uint16_t ReceiveBuffLength;  /* Length of data in receive buffer */
 
 } RADIO_AppData_t;
 

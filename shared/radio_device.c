@@ -109,14 +109,21 @@ int32_t RADIO_CheckInterrupt(gpio_info_t *interrupt_gpio, uint8_t *interrupt_sta
 /*
 ** Generic command to device via SPI
 */
-int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint8_t payload_len, uint8_t *payload)
+int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint16_t payload_len, uint8_t *payload)
 {
     int32_t status = OS_SUCCESS;
-    uint8_t tx_buffer[RADIO_MAX_PAYLOAD_SIZE + 5]; /* header(1) + cmd(1) + len(2) + payload + trailer(1)  */
+    uint8_t tx_buffer[2048]; /* Large enough for TM frame (1786) + header(1) + cmd(1) + len(2) + trailer(1) = 1791 */
     int32_t total_len;
     
     if (device == NULL)
     {
+        return OS_ERROR;
+    }
+    
+    /* Check payload length to prevent buffer overflow */
+    if (payload_len > (sizeof(tx_buffer) - 5))
+    {
+        OS_printf("RADIO_CommandDevice: Payload too large (%d bytes), max=%d\n", payload_len, (int)(sizeof(tx_buffer) - 5));
         return OS_ERROR;
     }
     
@@ -165,7 +172,7 @@ int32_t RADIO_RequestHK(spi_info_t *device, RADIO_Device_HK_tlm_t *data)
 {
     int32_t status = OS_SUCCESS;
     uint8_t rx_buffer[RADIO_DEVICE_HK_SIZE];
-    uint8_t tx_buffer[6]; /* Header + cmd + len + trailer */
+    uint8_t tx_buffer[5]; /* header(1) + cmd(1) + len(2) + payload + trailer(1) */
     
     if (device == NULL || data == NULL)
     {
@@ -259,7 +266,7 @@ int32_t RADIO_SetConfiguration(spi_info_t *device, RADIO_Device_Config_t *config
 /*
 ** Send data command
 */
-int32_t RADIO_SendData(spi_info_t *device, uint8_t *data, uint8_t data_length)
+int32_t RADIO_SendData(spi_info_t *device, uint8_t *data, uint16_t data_length)
 {
     if (device == NULL || data == NULL)
     {
@@ -268,7 +275,7 @@ int32_t RADIO_SendData(spi_info_t *device, uint8_t *data, uint8_t data_length)
 
     #ifdef RADIO_CFG_DEBUG
         OS_printf("RADIO_SendData: Sending %d bytes: ", data_length);
-        for (uint8_t i = 0; i < data_length; i++)
+        for (uint16_t i = 0; i < data_length; i++)
         {
             OS_printf("%02x", data[i]);
         }
@@ -286,7 +293,7 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint16_t max_length
 {
     int32_t status = OS_SUCCESS;
     uint8_t payload[2];
-    uint8_t rx_buffer[RADIO_MAX_PAYLOAD_SIZE + 6]; /* Max response size */
+    uint8_t rx_buffer[2048]; /* Large enough for TM frame + headers */
     uint16_t response_len;
     
     if (device == NULL || data == NULL || actual_length == NULL)
