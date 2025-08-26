@@ -17,10 +17,6 @@
 #include "simulith_42_commands.h"
 
 // Configuration parameters
-#define RADIO_SIM_SPI_BUS 1
-#define RADIO_SIM_SPI_CS 0
-#define RADIO_SIM_GPIO_POWER_PIN 10
-#define RADIO_SIM_GPIO_INTERRUPT_PIN 11
 #define RADIO_SIM_UPDATE_RATE_HZ 10
 
 // Status codes
@@ -34,9 +30,9 @@
 #define RADIO_SIM_MODE_DUPLEX 3
 
 // Buffer management
-#define RADIO_SIM_RX_BUFFER_SIZE 65536
-#define RADIO_SIM_TX_BUFFER_SIZE 65536
-#define RADIO_SIM_INTERRUPT_THRESHOLD 32768
+#define RADIO_SIM_RX_BUFFER_SIZE RADIO_CFG_BUFFER_SIZE
+#define RADIO_SIM_TX_BUFFER_SIZE RADIO_CFG_BUFFER_SIZE
+#define RADIO_SIM_INTERRUPT_THRESHOLD RADIO_CFG_INTERRUPT_THRESHOLD
 
 // Radio simulator state
 typedef struct 

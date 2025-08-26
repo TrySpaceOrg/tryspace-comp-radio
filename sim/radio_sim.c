@@ -19,7 +19,7 @@ static void* udp_ground_thread(void* arg)
     fd_set read_fds;
     struct timeval timeout;
     uint8_t buffer[1024];
-    ssize_t bytes_received;
+    size_t bytes_received;
     struct sockaddr_in from_addr;
     socklen_t from_len;
     
@@ -43,15 +43,17 @@ static void* udp_ground_thread(void* arg)
             
             if (bytes_received > 0)
             {
-                //printf("Received %zd bytes from ground station:\n  ", bytes_received);
-                //for (size_t i = 0; i < bytes_received && i < 10; i++) {
-                //    printf("0x%02X ", buffer[i]);
-                //}
-                //printf("\n");
+                #ifdef RADIO_CFG_DEBUG
+                printf("Received %zu bytes from ground station:\n  ", bytes_received);
+                for (size_t i = 0; i < bytes_received && i < 10; i++) {
+                    printf("0x%02X ", buffer[i]);
+                }
+                printf("\n");
+                #endif
                 
                 // Write to RX buffer if radio is powered and in RX or DUPLEX mode
                 if (gpio_power_state.value && 
-                    (state->config.Mode == RADIO_SIM_MODE_RX || state->config.Mode == RADIO_SIM_MODE_DUPLEX))
+                    (state->config.Mode == RADIO_MODE_RX || state->config.Mode == RADIO_MODE_DUPLEX))
                 {
                     pthread_mutex_lock(&state->buffer_mutex);
                     radio_sim_write_to_rx_buffer(state, buffer, bytes_received);
@@ -91,7 +93,7 @@ static void radio_sim_update_interrupt(radio_sim_state_t* state)
         }
         else
         {
-            printf("Interrupt deasserted - RX buffer has %d bytes\n", rx_count);
+            printf("Interrupt cleared - RX buffer has %d bytes\n", rx_count);
         }
     }
 }
@@ -226,13 +228,14 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
     #ifdef RADIO_CFG_DEBUG
     printf("SPI Handler: Received %zu bytes, powered_on=%d\n", length, gpio_power_state.value);
     printf("SPI Data: ");
-    for (size_t i = 0; i < length && i < 10; i++) {
+    for (size_t i = 0; i < length && i < 10; i++) 
+    {
         printf("0x%02X ", data[i]);
     }
     printf("\n");
     #endif
 
-    if (!state || !data || length < 4)  // Minimum: header(1) + cmd(1) + len(1) + trailer(1)
+    if (!state || !data || length < 5)  // Minimum: header(1) + cmd(1) + len(2) + trailer(1)
     {
         printf("Invalid SPI command parameters\n");
         return;
@@ -249,7 +252,7 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
     
     // Parse command
     uint8_t command = data[1];
-    uint8_t payload_len = data[2];
+    uint16_t payload_len = ((uint16_t)data[2] << 8) | data[3];
     
     // Validate header
     if (data[0] != RADIO_DEVICE_HDR)
@@ -258,8 +261,8 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
         return;
     }
 
-    /* Validate that the provided buffer contains the full command (header+cmd+len+payload+trailer) */
-    size_t expected_len = 4 + payload_len; /* total bytes in frame */
+    /* Validate that the provided buffer contains the full command (header+cmd+len(2)+payload+trailer) */
+    size_t expected_len = 5 + payload_len; /* header(1) + cmd(1) + len(2) + payload + trailer(1) */
     if (length < expected_len)
     {
         printf("Command length mismatch (have %zu, need %zu)\n", length, expected_len);
@@ -271,15 +274,6 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
     if (trailer != RADIO_DEVICE_TRAILER)
     {
         printf("Invalid command trailer: 0x%02X\n", trailer);
-        return;
-    }
-
-    // Check if radio is powered on - if not, drop all commands silently
-    if (!gpio_power_state.value)
-    {
-        #ifdef RADIO_CFG_DEBUG
-        printf("Radio not powered - dropping SPI command\n");
-        #endif
         return;
     }
 
@@ -302,11 +296,11 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
         case RADIO_DEVICE_SET_CFG_CMD:
             if (payload_len == RADIO_CFG_PAYLOAD_SIZE)
             {
-                state->config.Mode = data[3];
-                state->config.RxSpeedSetting = data[4];
-                state->config.RxWavelengthSetting = data[5];
-                state->config.TxSpeedSetting = data[6];
-                state->config.TxWavelengthSetting = data[7];
+                state->config.Mode = data[4];
+                state->config.RxSpeedSetting = data[5];
+                state->config.RxWavelengthSetting = data[6];
+                state->config.TxSpeedSetting = data[7];
+                state->config.TxWavelengthSetting = data[8];
 
                 /* Update housekeeping mirrors */
                 state->hk.Mode = state->config.Mode;
@@ -322,54 +316,60 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
             break;
 
         case RADIO_DEVICE_RECEIVE_CMD:
-            if (payload_len >= 1)
+            if (payload_len == 2)
             {
-                uint8_t requested = data[3];
-                uint32_t available;
-                uint8_t to_send;
+                uint16_t requested = ((uint16_t)data[4] << 8) | data[5];
+                uint16_t available;
+                uint16_t to_send;
 
                 pthread_mutex_lock(&state->buffer_mutex);
                 available = radio_sim_get_rx_buffer_count(state);
-                to_send = (available > requested) ? requested : (uint8_t)available;
+                to_send = (available > requested) ? requested : available;
 
-                uint8_t tx_buf[256];
+                uint8_t tx_buf[4096];
                 memset(tx_buf, 0, sizeof(tx_buf));
 
-                /* Frame: header, length, payload..., trailer */
+                /* Frame: header, length(2), payload..., trailer */
                 tx_buf[0] = RADIO_DEVICE_HDR;
-                tx_buf[1] = to_send;
+                tx_buf[1] = (to_send >> 8) & 0xFF;
+                tx_buf[2] = to_send & 0xFF;
 
                 if (to_send > 0)
                 {
-                    int read = radio_sim_read_from_rx_buffer(state, &tx_buf[2], to_send);
+                    int read = radio_sim_read_from_rx_buffer(state, &tx_buf[3], to_send);
                     if (read != to_send)
                     {
-                        to_send = (uint8_t)read;
-                        tx_buf[1] = to_send;
+                        to_send = (uint16_t)read;
+                        tx_buf[1] = (to_send >> 8) & 0xFF;
+                        tx_buf[2] = to_send & 0xFF;
                     }
                 }
 
-                tx_buf[2 + to_send] = RADIO_DEVICE_TRAILER;
+                tx_buf[3 + to_send] = RADIO_DEVICE_TRAILER;
 
                 /* Debug print: show reply buffer and length */
                 #ifdef RADIO_CFG_DEBUG
-                printf("radio_sim: RECEIVE_CMD reply: requested=%d, to_send=%d, send_len=%d\n", requested, to_send, requested);
+                printf("radio_sim: RECEIVE_CMD reply: requested=%u, to_send=%u, send_len=%u\n", requested, to_send, requested);
                 printf("radio_sim: reply buffer: ");
-                for (int i = 0; i < requested && i < 32; ++i) {
+                for (int i = 0; i < requested + 4 && i < 32; ++i) {
                     printf("%02X ", tx_buf[i]);
                 }
                 printf("\n");
                 #endif
 
-                /* Send exactly 'requested' bytes so caller reading 'requested' bytes gets frame + padding */
-                int send_len = requested;
+                /* Send the full frame: header(1)+len(2)+payload+trailer(1) */
+                int send_len = 4 + to_send;
                 if (send_len > 0)
                 {
-                    simulith_transport_send(&g_spi_device, tx_buf, send_len);
+                    simulith_transport_send(&g_spi_device, tx_buf, requested + 4); /* Always send full requested length */
                 }
 
                 state->hk.BytesSent += to_send;
                 pthread_mutex_unlock(&state->buffer_mutex);
+            }
+            else
+            {
+                printf("Radio sim: RECEIVE_CMD with invalid payload_len=%d\n", payload_len);
             }
             break;
 
@@ -380,9 +380,10 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
                 state->hk.BytesReceived += payload_len;
 
                 /* Forward to ground if in TX/DUPLEX */
-                if (state->config.Mode == RADIO_SIM_MODE_TX || state->config.Mode == RADIO_SIM_MODE_DUPLEX)
+                if (state->config.Mode == RADIO_MODE_TX || state->config.Mode == RADIO_MODE_DUPLEX)
                 {
-                    ssize_t sent = sendto(state->udp_tx_socket, &data[3], payload_len, 0,
+                    /* Payload begins at data[4] (protocol: header[0], cmd[1], len_hi[2], len_lo[3], payload[4..]) */
+                    ssize_t sent = sendto(state->udp_tx_socket, &data[4], payload_len, 0,
                                          (struct sockaddr*)&state->ground_tx_addr, sizeof(state->ground_tx_addr));
                     if (sent > 0)
                     {
@@ -437,7 +438,7 @@ static void radio_sim_on_tick(uint64_t tick_time_ns, const simulith_42_context_t
     }
     
     // Poll for SPI requests using Simulith transport
-    uint8_t spi_rx_buf[256];
+    uint8_t spi_rx_buf[4096];
     int spi_bytes = simulith_transport_available(&g_spi_device);
     if (spi_bytes > 0) 
     {
@@ -494,7 +495,7 @@ static void radio_sim_on_tick(uint64_t tick_time_ns, const simulith_42_context_t
                             pthread_mutex_unlock(&g_state->buffer_mutex);
                             gpio_interrupt_state.value = 0;
                             memset(&g_state->config, 0, sizeof(g_state->config));
-                            g_state->hk.Mode = RADIO_SIM_MODE_SLEEP;
+                            g_state->hk.Mode = RADIO_MODE_SLEEP;
                         }
                     }
                 }
@@ -630,11 +631,11 @@ int radio_sim_init(radio_sim_state_t* state)
     memset(&state->ground_tx_addr, 0, sizeof(state->ground_tx_addr));
     state->ground_tx_addr.sin_family = AF_INET;
     // Hostname resolution for ground station
-    struct hostent* ground_host = gethostbyname("tryspace-gsw");
+    struct hostent* ground_host = gethostbyname("tryspace-cryptolib");
     if (ground_host && ground_host->h_addrtype == AF_INET && ground_host->h_addr_list[0]) {
         memcpy(&state->ground_tx_addr.sin_addr, ground_host->h_addr_list[0], ground_host->h_length);
     } else {
-        printf("Failed to resolve ground station hostname 'tryspace-gsw', using INADDR_ANY\n");
+        printf("Failed to resolve ground station hostname 'tryspace-cryptolib', using INADDR_ANY\n");
         state->ground_tx_addr.sin_addr.s_addr = INADDR_ANY;
     }
     state->ground_tx_addr.sin_port = htons(RADIO_CFG_UDP_GROUND_TX_PORT);
@@ -654,10 +655,10 @@ int radio_sim_init(radio_sim_state_t* state)
     
     // Initialize default values
     state->hk.CommandCounter = 0;
-    state->hk.Mode = RADIO_SIM_MODE_DUPLEX;
+    state->hk.Mode = RADIO_MODE_DUPLEX;
     state->hk.GroundLock = 0;
 
-    state->config.Mode = RADIO_SIM_MODE_DUPLEX;
+    state->config.Mode = RADIO_MODE_DUPLEX;
     
     state->interrupt_asserted = 0;
     state->last_update_time = 0.0;

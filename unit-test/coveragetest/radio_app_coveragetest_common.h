@@ -14,6 +14,14 @@
 #include "radio_app.h"
 
 /*
+ * Device state constants for unit testing
+ */
+#define SPI_DEVICE_OPEN    1
+#define SPI_DEVICE_CLOSED  0
+#define GPIO_OPEN          1
+#define GPIO_CLOSED        0
+
+/*
  * Macro to call a function and check its int32 return code
  */
 #define UT_TEST_FUNCTION_RC(func, exp)                                                                \

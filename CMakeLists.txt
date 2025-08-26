@@ -10,11 +10,10 @@ include_directories(src)
 
 include_directories(shared)
 include_directories(${hwlib_MISSION_DIR}/fsw/public_inc)
+include_directories(${io_lib_MISSION_DIR}/fsw/public_inc)
 include_directories(${APPLICATION_PLATFORM_INC_LIST})
 
 aux_source_directory(src APP_SRC_FILES)
-
-include_directories(${APPLICATION_PLATFORM_INC_LIST})
 
 # Create the app module
 add_cfe_app(radio ${APP_SRC_FILES} shared/radio_device.c)

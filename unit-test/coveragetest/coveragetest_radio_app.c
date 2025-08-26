@@ -578,23 +578,25 @@ void Test_RADIO_Enable(void)
 
     UT_CheckEvent_Setup(&EventTest, RADIO_ENABLE_INF_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_SUCCESS);
+    UT_SetDeferredRetcode(UT_KEY(spi_init_dev), 1, SPI_SUCCESS);
+    UT_SetDeferredRetcode(UT_KEY(gpio_init), 1, GPIO_SUCCESS);
+    UT_SetDeferredRetcode(UT_KEY(gpio_init), 2, GPIO_SUCCESS);  /* Called twice for power and interrupt GPIO */
+    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, GPIO_SUCCESS);  /* For power on */
     RADIO_Enable();
     UtAssert_True(EventTest.MatchCount == 1, "RADIO: Device enabled (%u)", (unsigned int)EventTest.MatchCount);
 
     UT_CheckEvent_Setup(&EventTest, RADIO_ENABLE_ERR_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_ERROR);
+    UT_SetDeferredRetcode(UT_KEY(spi_init_dev), 1, SPI_ERROR);
     RADIO_Enable();
-    UtAssert_True(EventTest.MatchCount == 1, "RADIO: UART port initialization error (%u)",
+    UtAssert_True(EventTest.MatchCount == 1, "RADIO: SPI initialization error (%u)",
                   (unsigned int)EventTest.MatchCount);
 
     UT_CheckEvent_Setup(&EventTest, RADIO_ENABLE_ERR_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
-    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_ERROR);
     RADIO_Enable();
-    /* Production does not emit an event when enable is called while already enabled */
-    UtAssert_True(EventTest.MatchCount == 0, "RADIO: No event expected when enabling an already-enabled device (%u)",
+    /* Production should emit an error when enable is called while already enabled */
+    UtAssert_True(EventTest.MatchCount == 1, "RADIO: Error event expected when enabling an already-enabled device (%u)",
                   (unsigned int)EventTest.MatchCount);
 }
 
@@ -604,23 +606,20 @@ void Test_RADIO_Disable(void)
 
     UT_CheckEvent_Setup(&EventTest, RADIO_DISABLE_INF_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
-    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_SUCCESS);
+    RADIO_AppData.RadioSpi.isOpen = SPI_DEVICE_OPEN;
+    RADIO_AppData.RadioPowerGpio.isOpen = GPIO_OPEN;
+    RADIO_AppData.RadioInterruptGpio.isOpen = GPIO_OPEN;
+    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, GPIO_SUCCESS);  /* For power off */
+    UT_SetDeferredRetcode(UT_KEY(spi_close_device), 1, SPI_SUCCESS);
+    UT_SetDeferredRetcode(UT_KEY(gpio_close), 1, GPIO_SUCCESS);
+    UT_SetDeferredRetcode(UT_KEY(gpio_close), 2, GPIO_SUCCESS);  /* Called twice for power and interrupt GPIO */
     RADIO_Disable();
     UtAssert_True(EventTest.MatchCount == 1, "RADIO: Device disabled (%u)", (unsigned int)EventTest.MatchCount);
 
     UT_CheckEvent_Setup(&EventTest, RADIO_DISABLE_ERR_EID, NULL);
-    RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
-    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_ERROR);
-    RADIO_Disable();
-    UtAssert_True(EventTest.MatchCount == 1, "RADIO: UART port close error (%u)", (unsigned int)EventTest.MatchCount);
-
-    UT_CheckEvent_Setup(&EventTest, RADIO_DISABLE_ERR_EID, NULL);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-    UT_SetDeferredRetcode(UT_KEY(gpio_write), 1, OS_ERROR);
     RADIO_Disable();
-    /* Production does not emit an event when disable is called while already disabled */
-    UtAssert_True(EventTest.MatchCount == 0, "RADIO: No event expected when disabling an already-disabled device (%u)",
-                  (unsigned int)EventTest.MatchCount);
+    UtAssert_True(EventTest.MatchCount == 1, "RADIO: Error event expected when disabling an already-disabled device (%u)", (unsigned int)EventTest.MatchCount);
 }
 
 /*

@@ -28,7 +28,7 @@
 #define RADIO_MODE_DUPLEX 3
 
 /* Device command payload sizes */
-#define RADIO_MAX_PAYLOAD_SIZE 255
+#define RADIO_MAX_PAYLOAD_SIZE 1024
 #define RADIO_CFG_PAYLOAD_SIZE 5
 #define RADIO_RECEIVE_PAYLOAD_SIZE 1
 
@@ -82,11 +82,11 @@ typedef struct
 ** Prototypes
 */
 int32_t RADIO_InitDevice(spi_info_t *spi_device, gpio_info_t *power_gpio, gpio_info_t *interrupt_gpio);
-int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint8_t payload_len, uint8_t *payload);
+int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint16_t payload_len, uint8_t *payload);
 int32_t RADIO_RequestHK(spi_info_t *device, RADIO_Device_HK_tlm_t *data);
 int32_t RADIO_SetConfiguration(spi_info_t *device, RADIO_Device_Config_t *config);
-int32_t RADIO_SendData(spi_info_t *device, uint8_t *data, uint8_t data_length);
-int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint8_t max_length, uint8_t *actual_length);
+int32_t RADIO_SendData(spi_info_t *device, uint8_t *data, uint16_t data_length);
+int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint16_t max_length, uint16_t *actual_length);
 int32_t RADIO_CheckInterrupt(gpio_info_t *interrupt_gpio, uint8_t *interrupt_status);
 int32_t RADIO_PowerOn(gpio_info_t *power_gpio);
 int32_t RADIO_PowerOff(gpio_info_t *power_gpio);
