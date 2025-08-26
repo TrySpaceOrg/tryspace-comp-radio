@@ -130,7 +130,7 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
     uint8_t  interrupt_status;
     uint8_t  send_data[RADIO_MAX_PAYLOAD_SIZE];
     uint8_t  recv_data[RADIO_MAX_PAYLOAD_SIZE];
-    uint8_t  actual_length;
+    uint16_t  actual_length;
     uint16_t max_length;
     uint32_t i;
 

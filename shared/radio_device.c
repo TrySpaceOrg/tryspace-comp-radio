@@ -61,7 +61,7 @@ int32_t RADIO_PowerOn(gpio_info_t *power_gpio)
     }
     
     /* Small delay for power stabilization */
-    OS_TaskDelay(10);
+    OS_TaskDelay(RADIO_CFG_MS_TIMEOUT / 100); /* Convert ms to 10ms units */
     
     return OS_SUCCESS;
 }
@@ -188,7 +188,7 @@ int32_t RADIO_RequestHK(spi_info_t *device, RADIO_Device_HK_tlm_t *data)
     }
     
     /* Wait briefly for response */
-    OS_TaskDelay(10);
+    OS_TaskDelay(RADIO_CFG_MS_TIMEOUT / 100); /* Convert ms to 10ms units */
     
     /* Read HK response */
     memset(tx_buffer, 0, sizeof(tx_buffer));

@@ -560,6 +560,7 @@ void RADIO_ResetCounters(void)
     return;
 }
 
+
 /*
 ** Enable component
 */
@@ -567,22 +568,71 @@ void RADIO_Enable(void)
 {
     int32 status = OS_SUCCESS;
 
-    /* Enable device using GPIO */
+    /* Do any necessary checks, confirm that device is currently disabled */
     if (RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_DISABLED)
     {
-        status = RADIO_PowerOn(&RADIO_AppData.RadioPowerGpio);
+        /* Increment command success counter */
+        RADIO_AppData.HkTelemetryPkt.CommandCount++;
+
+        /*
+        ** Do the action, initialize hardware interface and set enabled
+        */
+        RADIO_AppData.RadioSpi.bus = RADIO_CFG_SPI_BUS;
+        RADIO_AppData.RadioSpi.cs = RADIO_CFG_SPI_CS;
+        RADIO_AppData.RadioSpi.isOpen = SPI_DEVICE_CLOSED;
+
+        RADIO_AppData.RadioPowerGpio.pin = RADIO_CFG_GPIO_POWER_PIN;
+        RADIO_AppData.RadioPowerGpio.direction = GPIO_OUTPUT;
+        RADIO_AppData.RadioPowerGpio.isOpen = GPIO_CLOSED;
+
+        RADIO_AppData.RadioInterruptGpio.pin = RADIO_CFG_GPIO_INTERRUPT_PIN;
+        RADIO_AppData.RadioInterruptGpio.direction = GPIO_INPUT;
+        RADIO_AppData.RadioInterruptGpio.isOpen = GPIO_CLOSED;
+
+        status = RADIO_InitDevice(&RADIO_AppData.RadioSpi, &RADIO_AppData.RadioPowerGpio, &RADIO_AppData.RadioInterruptGpio);
         if (status == OS_SUCCESS)
         {
-            RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
-            CFE_EVS_SendEvent(RADIO_ENABLE_INF_EID, CFE_EVS_EventType_INFORMATION,
-                              "RADIO: Device enabled");
+            /* Power on the radio */
+            status = RADIO_PowerOn(&RADIO_AppData.RadioPowerGpio);
+            if (status == OS_SUCCESS)
+            {
+                RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
+
+                /* Increment device success counter */
+                RADIO_AppData.HkTelemetryPkt.DeviceCount++;
+
+                /* Send device event success to the console */
+                CFE_EVS_SendEvent(RADIO_ENABLE_INF_EID, CFE_EVS_EventType_INFORMATION,
+                                  "RADIO: Device enabled successfully");
+            }
+            else
+            {
+                /* Increment device error counter */
+                RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+
+                /* Send device event error to the console */
+                CFE_EVS_SendEvent(RADIO_ENABLE_ERR_EID, CFE_EVS_EventType_ERROR,
+                                  "RADIO: Device failed to power on, status=%d", status);
+            }
         }
         else
         {
+            /* Increment device error counter */
             RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+
+            /* Send device event error to the console */
             CFE_EVS_SendEvent(RADIO_ENABLE_ERR_EID, CFE_EVS_EventType_ERROR,
-                              "RADIO: Failed to enable device");
+                              "RADIO: Device failed to initialize, status=%d", status);
         }
+    }
+    else
+    {
+        /* Increment command error counter */
+        RADIO_AppData.HkTelemetryPkt.CommandErrorCount++;
+
+        /* Send command event error to the console */
+        CFE_EVS_SendEvent(RADIO_ENABLE_ERR_EID, CFE_EVS_EventType_ERROR,
+                          "RADIO: Device enable rejected, device already enabled");
     }
     return;
 }
@@ -592,24 +642,56 @@ void RADIO_Enable(void)
 */
 void RADIO_Disable(void)
 {
-    int32 status = OS_SUCCESS;
-
-    /* Disable device using GPIO */
+    /* Do any necessary checks, confirm that device is currently enabled */
     if (RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED)
     {
-        status = RADIO_PowerOff(&RADIO_AppData.RadioPowerGpio);
-        if (status == OS_SUCCESS)
+        /* Increment command success counter */
+        RADIO_AppData.HkTelemetryPkt.CommandCount++;
+
+        /*
+        ** Do the action, close hardware interface and set disabled
+        */
+        
+        /* Power off the radio */
+        RADIO_PowerOff(&RADIO_AppData.RadioPowerGpio);
+        
+        /* Close SPI device */
+        if (RADIO_AppData.RadioSpi.isOpen == SPI_DEVICE_OPEN)
         {
-            RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-            CFE_EVS_SendEvent(RADIO_DISABLE_INF_EID, CFE_EVS_EventType_INFORMATION,
-                              "RADIO: Device disabled");
+            spi_close_device(&RADIO_AppData.RadioSpi);
+            RADIO_AppData.RadioSpi.isOpen = SPI_DEVICE_CLOSED;
         }
-        else
+        
+        /* Close GPIO devices */
+        if (RADIO_AppData.RadioPowerGpio.isOpen == GPIO_OPEN)
         {
-            RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-            CFE_EVS_SendEvent(RADIO_DISABLE_ERR_EID, CFE_EVS_EventType_ERROR,
-                              "RADIO: Failed to disable device");
+            gpio_close(&RADIO_AppData.RadioPowerGpio);
+            RADIO_AppData.RadioPowerGpio.isOpen = GPIO_CLOSED;
         }
+        
+        if (RADIO_AppData.RadioInterruptGpio.isOpen == GPIO_OPEN)
+        {
+            gpio_close(&RADIO_AppData.RadioInterruptGpio);
+            RADIO_AppData.RadioInterruptGpio.isOpen = GPIO_CLOSED;
+        }
+
+        RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
+
+        /* Increment device success counter */
+        RADIO_AppData.HkTelemetryPkt.DeviceCount++;
+
+        /* Send device event success to the console */
+        CFE_EVS_SendEvent(RADIO_DISABLE_INF_EID, CFE_EVS_EventType_INFORMATION,
+                          "RADIO: Device disabled successfully");
+    }
+    else
+    {
+        /* Increment command error counter */
+        RADIO_AppData.HkTelemetryPkt.CommandErrorCount++;
+
+        /* Send command event error to the console */
+        CFE_EVS_SendEvent(RADIO_DISABLE_ERR_EID, CFE_EVS_EventType_ERROR,
+                          "RADIO: Device disable rejected, device already disabled");
     }
     return;
 }

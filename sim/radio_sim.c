@@ -53,7 +53,7 @@ static void* udp_ground_thread(void* arg)
                 
                 // Write to RX buffer if radio is powered and in RX or DUPLEX mode
                 if (gpio_power_state.value && 
-                    (state->config.Mode == RADIO_SIM_MODE_RX || state->config.Mode == RADIO_SIM_MODE_DUPLEX))
+                    (state->config.Mode == RADIO_MODE_RX || state->config.Mode == RADIO_MODE_DUPLEX))
                 {
                     pthread_mutex_lock(&state->buffer_mutex);
                     radio_sim_write_to_rx_buffer(state, buffer, bytes_received);
@@ -380,7 +380,7 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
                 state->hk.BytesReceived += payload_len;
 
                 /* Forward to ground if in TX/DUPLEX */
-                if (state->config.Mode == RADIO_SIM_MODE_TX || state->config.Mode == RADIO_SIM_MODE_DUPLEX)
+                if (state->config.Mode == RADIO_MODE_TX || state->config.Mode == RADIO_MODE_DUPLEX)
                 {
                     /* Payload begins at data[4] (protocol: header[0], cmd[1], len_hi[2], len_lo[3], payload[4..]) */
                     ssize_t sent = sendto(state->udp_tx_socket, &data[4], payload_len, 0,
@@ -495,7 +495,7 @@ static void radio_sim_on_tick(uint64_t tick_time_ns, const simulith_42_context_t
                             pthread_mutex_unlock(&g_state->buffer_mutex);
                             gpio_interrupt_state.value = 0;
                             memset(&g_state->config, 0, sizeof(g_state->config));
-                            g_state->hk.Mode = RADIO_SIM_MODE_SLEEP;
+                            g_state->hk.Mode = RADIO_MODE_SLEEP;
                         }
                     }
                 }
@@ -655,10 +655,10 @@ int radio_sim_init(radio_sim_state_t* state)
     
     // Initialize default values
     state->hk.CommandCounter = 0;
-    state->hk.Mode = RADIO_SIM_MODE_DUPLEX;
+    state->hk.Mode = RADIO_MODE_DUPLEX;
     state->hk.GroundLock = 0;
 
-    state->config.Mode = RADIO_SIM_MODE_DUPLEX;
+    state->config.Mode = RADIO_MODE_DUPLEX;
     
     state->interrupt_asserted = 0;
     state->last_update_time = 0.0;
