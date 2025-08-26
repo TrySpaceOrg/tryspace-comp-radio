@@ -2,7 +2,7 @@
 .PHONY: all build build-sim clean debug
 
 export BUILDDIR ?= $(CURDIR)/build
-export BUILD_IMAGE ?= tryspaceorg/tryspace-lab:0.0.0
+export BUILD_IMAGE ?= tryspaceorg/tryspace-lab:0.0.1
 export RUNTIME_NAME ?= tryspace-comp-eps-sim
 export TRYLABDIR ?= $(CURDIR)/../../..
 

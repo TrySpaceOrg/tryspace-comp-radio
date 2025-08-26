@@ -1,4 +1,4 @@
-FROM tryspaceorg/tryspace-lab:0.0.0
+FROM tryspaceorg/tryspace-lab:0.0.1
 
 # Copy built files into the image
 COPY ./build /app

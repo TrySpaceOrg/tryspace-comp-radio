@@ -2,7 +2,7 @@
 .PHONY: all build clean debug runtime start stop
 
 export BUILDDIR ?= $(CURDIR)/build
-export BUILD_IMAGE ?= tryspaceorg/tryspace-lab:0.0.0
+export BUILD_IMAGE ?= tryspaceorg/tryspace-lab:0.0.1
 export RUNTIME_NAME ?= tryspace-comp-radio-cli
 export TRYLABDIR ?= $(CURDIR)/../../..
 export TGTNAME ?= cpu1
