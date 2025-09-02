@@ -789,100 +789,150 @@ void RADIO_ServiceUplink(void)
         if (RADIO_AppData.ReceiveBuffLength > 0) 
         {
             #ifdef RADIO_CFG_DEBUG
-            /* Debug: Print received frame for analysis */
             OS_printf("RADIO_Service: Received TC frame (%u bytes): ", RADIO_AppData.ReceiveBuffLength);
-            for (uint32 i = 0; i < RADIO_AppData.ReceiveBuffLength && i < 32; ++i) 
+            for (uint32 i = 0; i < RADIO_AppData.ReceiveBuffLength && i < 16; ++i) 
             {
                 OS_printf("%02X ", RADIO_AppData.ReceiveBuffer[i]);
             }
             OS_printf("\n");
             #endif
             
-            /* Process TC frame through CryptoLib following ci_custom.c pattern */
-            TC_t crypto_tc_frame;
-            int32 frame_size = (int32)RADIO_AppData.ReceiveBuffLength;
-            
-            /* Call CryptoLib to process security and extract payload */
-            int32 crypto_status = Crypto_TC_ProcessSecurity((uint8_t *)RADIO_AppData.ReceiveBuffer, 
-                                                           &frame_size, 
-                                                           &crypto_tc_frame);
-            
-            if (crypto_status == CRYPTO_LIB_SUCCESS)
-            {               
-                #ifdef RADIO_CFG_DEBUG
-                /* Debug prints for processed payload */
-                OS_printf("RADIO_Service: Processed TC payload (%u bytes): ", crypto_tc_frame.tc_pdu_len);
-                for (uint16 i = 0; i < crypto_tc_frame.tc_pdu_len && i < 32; i++)
+            /* Process TC frames through CryptoLib: split concatenated TFs and handle partial frames */
+            {
+                TC_t crypto_tc_frame;
+                uint32_t offset = 0;
+                uint32_t buf_len = RADIO_AppData.ReceiveBuffLength;
+
+                while (offset + 5 <= buf_len) /* need at least primary header */
                 {
-                    OS_printf("%02X ", crypto_tc_frame.tc_pdu[i]);
-                }
-                OS_printf("\n");
-                #endif
-                
-                /* Look for valid CCSDS Space Packets in the processed payload */
-                for (uint16 scan_offset = 0; scan_offset <= crypto_tc_frame.tc_pdu_len && (crypto_tc_frame.tc_pdu_len - scan_offset) >= 6; scan_offset++)
-                {
-                    uint8 *potential_packet = crypto_tc_frame.tc_pdu + scan_offset;
-                    
-                    /* Check for valid CCSDS Primary Header pattern */
-                    uint16 packet_id = (potential_packet[0] << 8) | potential_packet[1];
-                    uint16 packet_seq = (potential_packet[2] << 8) | potential_packet[3];
-                    uint16 packet_len = (potential_packet[4] << 8) | potential_packet[5];
-                    
-                    /* CCSDS validation criteria */
-                    uint8 version = (packet_id >> 13) & 0x07;
-                    uint8 type = (packet_id >> 12) & 0x01;
-                    uint16 apid = packet_id & 0x07FF;
-                    uint8 seq_flags = (packet_seq >> 14) & 0x03;
-                    uint16 total_packet_size = packet_len + 7; /* +7 for primary header + 1 for length field convention */
-                    
-                    /* Validate CCSDS Space Packet structure */
-                    if (version == 0 &&                                    /* CCSDS version 0 */
-                        type == 1 &&                                       /* Command packet */
-                        apid > 0 && apid < 0x7FF &&                       /* Valid APID range */
-                        seq_flags <= 3 &&                                  /* Valid sequence flags */
-                        total_packet_size >= 7 && total_packet_size <= 256 && /* Reasonable packet size */
-                        scan_offset + total_packet_size <= crypto_tc_frame.tc_pdu_len) /* Fits in processed payload */
+                    uint8_t *cur = RADIO_AppData.ReceiveBuffer + offset;
+                    uint16_t fl = (uint16_t)((cur[2] & 0x03) << 8) | (uint16_t)cur[3];
+                    uint32_t frame_len = (uint32_t)fl + 1U;
+
+                    /* Sanity check frame_len */
+                    if (frame_len < 5)
+                    {
+                        /* Invalid length in header - drop rest */
+                        CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                                          "RADIO: Invalid TF length parsed (%u) at offset %u, dropping buffer", (unsigned)frame_len, (unsigned)offset);
+                        offset = buf_len; /* force exit */
+                        break;
+                    }
+
+                    if (offset + frame_len > buf_len)
+                    {
+                        /* Partial frame - keep for next poll */
+                        break;
+                    }
+
+                    /* Parse TF header fields for logging and GVCID checks */
+                    uint8_t tfvn = (uint8_t)((cur[0] & 0xC0) >> 6);
+                    uint16_t scid = (uint16_t)(((cur[0] & 0x03) << 8) | cur[1]);
+                    uint8_t vcid = (uint8_t)(((cur[2] & 0xFC) >> 2) & 0x3F);
+                    uint8_t segmentation_hdr = 0;
+                    uint8_t map_id = 0;
+                    if (frame_len >= 6)
+                    {
+                        segmentation_hdr = cur[5];
+                        map_id = segmentation_hdr & 0x3F;
+                    }
+
+                    #ifdef RADIO_CFG_DEBUG
+                    /* Debug: print the TF length and first bytes to verify splitting */
+                    OS_printf("RADIO_Service: Passing TF to Crypto (len=%u) header:", (unsigned)frame_len);
+                    for (uint32 dbg_i = 0; dbg_i < frame_len && dbg_i < 16; ++dbg_i)
+                    {
+                        OS_printf(" %02X", cur[dbg_i]);
+                    }
+                    OS_printf("\n");
+                    #endif
+
+                    /* Process this single TC frame */
+                    int32 frame_size = (int32)frame_len;
+                    int32 crypto_status = Crypto_TC_ProcessSecurity((uint8_t *)cur, &frame_size, &crypto_tc_frame);
+
+                    /* If managed parameters missing, log the TF header GVCID for diagnostics */
+                    if (crypto_status == MANAGED_PARAMETERS_FOR_GVCID_NOT_FOUND)
+                    {
+                        CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                                          "RADIO: Crypto missing managed params for GVCID tfvn=%u scid=%u vcid=%u map_id=%u",
+                                          (unsigned)tfvn, (unsigned)scid, (unsigned)vcid, (unsigned)map_id);
+                    }
+
+                    if (crypto_status == CRYPTO_LIB_SUCCESS)
                     {
                         #ifdef RADIO_CFG_DEBUG
-                        uint16 seq_count = packet_seq & 0x3FFF;
-                        OS_printf("RADIO_Service: Found valid CCSDS command packet at offset %u\n", scan_offset);
-                        OS_printf("  PacketID=0x%04X, APID=%u, Type=%u, SeqCount=%u, Length=%u\n", 
-                                  packet_id, apid, type, seq_count, total_packet_size);
+                        /* Debug prints for processed payload */
+                        OS_printf("RADIO_Service: Processed TC payload (%u bytes): ", crypto_tc_frame.tc_pdu_len);
+                        for (uint16 i = 0; i < crypto_tc_frame.tc_pdu_len && i < 16; i++)
+                        {
+                            OS_printf("%02X ", crypto_tc_frame.tc_pdu[i]);
+                        }
+                        OS_printf("\n");
                         #endif
-                        
-                        /* Create CFE message from the space packet */
-                        CFE_SB_Buffer_t *sb_buf = (CFE_SB_Buffer_t *)potential_packet;
-                        
-                        /* Transmit the space packet to the Software Bus */
-                        CFE_SB_TransmitMsg((CFE_MSG_Message_t *)&sb_buf->Msg, true);
-                        
-                        /* Log detailed information */
-                        CFE_SB_MsgId_t msg_id;
-                        CFE_MSG_FcnCode_t cmd_code = 0;
-                        if (CFE_MSG_GetMsgId((CFE_MSG_Message_t *)&sb_buf->Msg, &msg_id) == CFE_SUCCESS)
+
+                        /* Look for valid CCSDS Space Packets in the processed payload */
+                        for (uint16 scan_offset = 0; scan_offset <= crypto_tc_frame.tc_pdu_len && (crypto_tc_frame.tc_pdu_len - scan_offset) >= 6; scan_offset++)
                         {
-                            CFE_MSG_GetFcnCode((CFE_MSG_Message_t *)&sb_buf->Msg, &cmd_code);
-                            #ifdef RADIO_CFG_DEBUG
-                            OS_printf("RADIO_Service: Transmitted space packet MsgId=0x%04X, CC=%u\n", 
-                                      CFE_SB_MsgIdToValue(msg_id), cmd_code);
-                            #endif
+                            uint8 *potential_packet = crypto_tc_frame.tc_pdu + scan_offset;
+                            uint16 packet_id = (potential_packet[0] << 8) | potential_packet[1];
+                            uint16 packet_seq = (potential_packet[2] << 8) | potential_packet[3];
+                            uint16 packet_len = (potential_packet[4] << 8) | potential_packet[5];
+                            uint8 version = (packet_id >> 13) & 0x07;
+                            uint8 type = (packet_id >> 12) & 0x01;
+                            uint8 seq_flags = (packet_seq >> 14) & 0x03;
+                            uint16 total_packet_size = packet_len + 7;
+                            CFE_SB_Buffer_t *sb_buf = (CFE_SB_Buffer_t *)potential_packet;
+                            
+                            if (version == 0 && type == 1 && seq_flags <= 3 && total_packet_size >= 7 &&
+                                scan_offset + total_packet_size <= crypto_tc_frame.tc_pdu_len)
+                                {
+                                #ifdef RADIO_CFG_DEBUG
+                                uint16 apid = packet_id & 0x07FF;
+                                uint16 seq_count = packet_seq & 0x3FFF;
+                                OS_printf("RADIO_Service: Found valid CCSDS command packet at offset %u\n", scan_offset);
+                                OS_printf("  PacketID=0x%04X, APID=%u, Type=%u, SeqCount=%u, Length=%u\n",
+                                          packet_id, apid, type, seq_count, total_packet_size);
+
+                                CFE_SB_MsgId_t msg_id = CFE_SB_INVALID_MSG_ID;
+                                size_t msg_len = 0;
+                                if (CFE_MSG_GetMsgId((CFE_MSG_Message_t *)&sb_buf->Msg, &msg_id) == CFE_SUCCESS &&
+                                    CFE_MSG_GetSize((CFE_MSG_Message_t *)&sb_buf->Msg, &msg_len) == CFE_SUCCESS)
+                                {
+                                    OS_printf("RADIO: forwarding space packet to SB MsgId=0x%04X len=%zu\n", CFE_SB_MsgIdToValue(msg_id), msg_len);
+                                }
+                                else
+                                {
+                                    OS_printf("RADIO: forwarding space packet to SB (MsgId/len parse failed)\n");
+                                }
+                                #endif
+                                CFE_SB_TransmitMsg((CFE_MSG_Message_t *)&sb_buf->Msg, true);
+                                scan_offset += total_packet_size - 1;
+                            }
                         }
-                        else
-                        {
-                            OS_printf("RADIO_Service: Transmitted space packet (MsgId parsing failed)\n");
-                        }
-                        
-                        /* Move scan offset past this packet to look for more */
-                        scan_offset += total_packet_size - 1; /* -1 because loop will increment */
                     }
+                    else
+                    {
+                        RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+                        CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                                          "RADIO: Crypto_TC_ProcessSecurity failed, status=%d", crypto_status);
+                    }
+
+                    /* Advance to next TF in buffer */
+                    offset += frame_len;
                 }
-            }
-            else
-            {
-                RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-                CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
-                                  "RADIO: Crypto_TC_ProcessSecurity failed, status=%d", crypto_status);
+
+                /* If there are trailing partial bytes, preserve them */
+                if (offset < buf_len)
+                {
+                    uint32_t remaining = buf_len - offset;
+                    memmove(RADIO_AppData.ReceiveBuffer, RADIO_AppData.ReceiveBuffer + offset, remaining);
+                    RADIO_AppData.ReceiveBuffLength = remaining;
+                }
+                else
+                {
+                    RADIO_AppData.ReceiveBuffLength = 0;
+                }
             }
         }
         /* After processing, reset buffer for next transaction */
