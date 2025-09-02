@@ -788,14 +788,14 @@ void RADIO_ServiceUplink(void)
         /* --- TC Frame Processing with CryptoLib --- */
         if (RADIO_AppData.ReceiveBuffLength > 0) 
         {
-            //#ifdef RADIO_CFG_DEBUG
+            #ifdef RADIO_CFG_DEBUG
             OS_printf("RADIO_Service: Received TC frame (%u bytes): ", RADIO_AppData.ReceiveBuffLength);
             for (uint32 i = 0; i < RADIO_AppData.ReceiveBuffLength && i < 16; ++i) 
             {
                 OS_printf("%02X ", RADIO_AppData.ReceiveBuffer[i]);
             }
             OS_printf("\n");
-            //#endif
+            #endif
             
             /* Process TC frames through CryptoLib: split concatenated TFs and handle partial frames */
             {
@@ -837,6 +837,7 @@ void RADIO_ServiceUplink(void)
                         map_id = segmentation_hdr & 0x3F;
                     }
 
+                    #ifdef RADIO_CFG_DEBUG
                     /* Debug: print the TF length and first bytes to verify splitting */
                     OS_printf("RADIO_Service: Passing TF to Crypto (len=%u) header:", (unsigned)frame_len);
                     for (uint32 dbg_i = 0; dbg_i < frame_len && dbg_i < 16; ++dbg_i)
@@ -844,6 +845,7 @@ void RADIO_ServiceUplink(void)
                         OS_printf(" %02X", cur[dbg_i]);
                     }
                     OS_printf("\n");
+                    #endif
 
                     /* Process this single TC frame */
                     int32 frame_size = (int32)frame_len;
@@ -859,6 +861,7 @@ void RADIO_ServiceUplink(void)
 
                     if (crypto_status == CRYPTO_LIB_SUCCESS)
                     {
+                        #ifdef RADIO_CFG_DEBUG
                         /* Debug prints for processed payload */
                         OS_printf("RADIO_Service: Processed TC payload (%u bytes): ", crypto_tc_frame.tc_pdu_len);
                         for (uint16 i = 0; i < crypto_tc_frame.tc_pdu_len && i < 16; i++)
@@ -866,6 +869,7 @@ void RADIO_ServiceUplink(void)
                             OS_printf("%02X ", crypto_tc_frame.tc_pdu[i]);
                         }
                         OS_printf("\n");
+                        #endif
 
                         /* Look for valid CCSDS Space Packets in the processed payload */
                         for (uint16 scan_offset = 0; scan_offset <= crypto_tc_frame.tc_pdu_len && (crypto_tc_frame.tc_pdu_len - scan_offset) >= 6; scan_offset++)
@@ -876,19 +880,20 @@ void RADIO_ServiceUplink(void)
                             uint16 packet_len = (potential_packet[4] << 8) | potential_packet[5];
                             uint8 version = (packet_id >> 13) & 0x07;
                             uint8 type = (packet_id >> 12) & 0x01;
-                            uint16 apid = packet_id & 0x07FF;
                             uint8 seq_flags = (packet_seq >> 14) & 0x03;
                             uint16 total_packet_size = packet_len + 7;
-
+                            CFE_SB_Buffer_t *sb_buf = (CFE_SB_Buffer_t *)potential_packet;
+                            
                             if (version == 0 && type == 1 && seq_flags <= 3 && total_packet_size >= 7 &&
                                 scan_offset + total_packet_size <= crypto_tc_frame.tc_pdu_len)
-                            {
+                                {
+                                #ifdef RADIO_CFG_DEBUG
+                                uint16 apid = packet_id & 0x07FF;
                                 uint16 seq_count = packet_seq & 0x3FFF;
                                 OS_printf("RADIO_Service: Found valid CCSDS command packet at offset %u\n", scan_offset);
                                 OS_printf("  PacketID=0x%04X, APID=%u, Type=%u, SeqCount=%u, Length=%u\n",
                                           packet_id, apid, type, seq_count, total_packet_size);
 
-                                CFE_SB_Buffer_t *sb_buf = (CFE_SB_Buffer_t *)potential_packet;
                                 CFE_SB_MsgId_t msg_id = CFE_SB_INVALID_MSG_ID;
                                 size_t msg_len = 0;
                                 if (CFE_MSG_GetMsgId((CFE_MSG_Message_t *)&sb_buf->Msg, &msg_id) == CFE_SUCCESS &&
@@ -900,8 +905,8 @@ void RADIO_ServiceUplink(void)
                                 {
                                     OS_printf("RADIO: forwarding space packet to SB (MsgId/len parse failed)\n");
                                 }
+                                #endif
                                 CFE_SB_TransmitMsg((CFE_MSG_Message_t *)&sb_buf->Msg, true);
-
                                 scan_offset += total_packet_size - 1;
                             }
                         }
