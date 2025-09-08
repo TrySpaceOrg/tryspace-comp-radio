@@ -217,7 +217,7 @@ int32 RADIO_AppInit(void)
     RADIO_AppData.HkTelemetryPkt.DeviceCount      = 0;
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled    = RADIO_DEVICE_DISABLED;
 
-    /* Initialize SPI and GPIO devices (reference radio_cli.c) */
+    /* Initialize SPI and GPIO devices */
     RADIO_AppData.RadioSpi.bus = RADIO_CFG_SPI_BUS;
     RADIO_AppData.RadioSpi.cs = RADIO_CFG_SPI_CS;
     RADIO_AppData.RadioSpi.isOpen = SPI_DEVICE_CLOSED;
@@ -234,28 +234,7 @@ int32 RADIO_AppInit(void)
     memset(RADIO_AppData.ReceiveBuffer, 0, sizeof(RADIO_AppData.ReceiveBuffer));
     RADIO_AppData.ReceiveBuffLength = 0;
 
-    /* Initialize radio device (SPI + GPIO) */
-    status = RADIO_InitDevice(&RADIO_AppData.RadioSpi, &RADIO_AppData.RadioPowerGpio, &RADIO_AppData.RadioInterruptGpio);
-    if (status == OS_SUCCESS)
-    {
-        status = RADIO_PowerOn(&RADIO_AppData.RadioPowerGpio);
-        if (status == OS_SUCCESS)
-        {
-            RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
-        }
-        else
-        {
-            RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-        }
-    }
-    else
-    {
-        RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-    }
-
-    OS_TaskDelay(5);
-
-    /* --- Initialize TM SDLP channel once (reuse like TO example) --- */
+    /* Initialize TM SDLP channel */
     radio_global_cfg.scId = 0x0003; /* Spacecraft ID */
     radio_global_cfg.frameLength = RADIO_TM_FRAME_SIZE;
     radio_global_cfg.hasErrCtrl = 0;
@@ -285,7 +264,7 @@ int32 RADIO_AppInit(void)
     {
         CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
                           "RADIO: TM_SDLP_InitChannel failed in init, status=%d", (int)status);
-        /* continue, ServiceDownlink will report errors when used */
+        /* Continue, ServiceDownlink will report errors when used */
     }
 
     /*
@@ -430,7 +409,6 @@ void RADIO_ProcessGroundCommand(void)
 
         /*
         ** Set Configuration Command
-        ** Note that this is an example of a command that has additional arguments
         */
         case RADIO_CONFIG_CC:
             if (RADIO_VerifyCmdLength(RADIO_AppData.MsgPtr, sizeof(RADIO_Config_cmd_t)) == OS_SUCCESS)
@@ -718,7 +696,7 @@ void RADIO_Configure(void)
     }
 
     /* Do any necessary checks, confirm valid configuration value */
-    if (config_cmd->DeviceCfg == 65535)
+    if (config_cmd->DeviceCfg.Mode > RADIO_MODE_DUPLEX)
     {
         status = OS_ERROR;
         /* Increment command error count */
@@ -726,7 +704,7 @@ void RADIO_Configure(void)
 
         /* Send event logging failure of check to the console */
         CFE_EVS_SendEvent(RADIO_CMD_CONFIG_VAL_ERR_EID, CFE_EVS_EventType_ERROR,
-                          "RADIO: Configuration command with value %u is invalid", config_cmd->DeviceCfg);
+                          "RADIO: Configuration command with mode %u is invalid", config_cmd->DeviceCfg.Mode);
     }
 
     if (status == OS_SUCCESS)
@@ -735,7 +713,7 @@ void RADIO_Configure(void)
         RADIO_AppData.HkTelemetryPkt.CommandCount++;
 
         /* Do the action, command device with new configuration using SPI */
-        device_status = RADIO_SetConfiguration(&RADIO_AppData.RadioSpi, (RADIO_Device_Config_t *)config_cmd);
+        device_status = RADIO_SetConfiguration(&RADIO_AppData.RadioSpi, &config_cmd->DeviceCfg);
         if (device_status == OS_SUCCESS)
         {
             /* Increment device success counter */
@@ -1106,10 +1084,20 @@ void RADIO_ServiceDownlink(void)
 */
 void RADIO_Service(void)
 {
+    CFE_SB_Buffer_t *discard_buf = NULL;
+    
     if (RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED)
     {
         RADIO_ServiceUplink();
         RADIO_ServiceDownlink();
+    }
+    else
+    {
+        /* Clear the downlink pipe by reading and discarding all messages */
+        while (CFE_SB_ReceiveBuffer(&discard_buf, RADIO_DownlinkPipe, CFE_SB_POLL) == CFE_SUCCESS)
+        {
+            /* Discard the message */
+        }
     }
     return;
 }
