@@ -15,7 +15,7 @@ uint32 RADIO_DownlinkPipe;
 
 /* Static buffers to avoid stack overflow */
 static uint8 static_tm_frame[RADIO_TM_FRAME_SIZE];
-static uint8 static_tm_overflow[RADIO_TM_FRAME_SIZE];
+static uint8 static_tm_overflow[RADIO_TM_FRAME_SIZE * 4]; /* Overflow buffer */
 static uint8 static_cadu_buffer[RADIO_TM_FRAME_SIZE + TM_SYNC_ASM_SIZE]; /* CADU with ASM space */
 
 /* Persistent TM SDLP configuration */
@@ -1086,9 +1086,19 @@ void RADIO_Service(void)
 {
     CFE_SB_Buffer_t *discard_buf = NULL;
     
-    if (RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED)
+    /* Service uplink if enabled and in correct mode */
+    if  ((RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED) &&
+            (RADIO_AppData.HkTelemetryPkt.DeviceHK.Mode == RADIO_MODE_RX ||
+            RADIO_AppData.HkTelemetryPkt.DeviceHK.Mode == RADIO_MODE_DUPLEX))
     {
         RADIO_ServiceUplink();
+    }
+
+    /* Service downlink if enabled and in correct mode */
+    if  ((RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED) &&
+         (RADIO_AppData.HkTelemetryPkt.DeviceHK.Mode == RADIO_MODE_TX ||
+          RADIO_AppData.HkTelemetryPkt.DeviceHK.Mode == RADIO_MODE_DUPLEX))
+    {
         RADIO_ServiceDownlink();
     }
     else
