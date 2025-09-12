@@ -18,7 +18,7 @@ static void* udp_ground_thread(void* arg)
     radio_sim_state_t* state = (radio_sim_state_t*)arg;
     fd_set read_fds;
     struct timeval timeout;
-    uint8_t buffer[1024];
+    uint8_t buffer[8192];
     size_t bytes_received;
     struct sockaddr_in from_addr;
     socklen_t from_len;

@@ -748,8 +748,19 @@ void RADIO_ServiceUplink(void)
     while (max_rx_transactions > 0)
     {
         /* Receive data from the radio into the tail of the buffer */
-        RADIO_ReceiveData(&RADIO_AppData.RadioSpi, RADIO_AppData.ReceiveBuffer + RADIO_AppData.ReceiveBuffLength,
-                        RADIO_MAX_PAYLOAD_SIZE - RADIO_AppData.ReceiveBuffLength, &actual_length);
+        int32 recv_status = RADIO_ReceiveData(&RADIO_AppData.RadioSpi,
+                                             RADIO_AppData.ReceiveBuffer + RADIO_AppData.ReceiveBuffLength,
+                                             RADIO_MAX_PAYLOAD_SIZE - RADIO_AppData.ReceiveBuffLength,
+                                             &actual_length);
+
+        /* If receive failed, record error and stop trying this poll */
+        if (recv_status != OS_SUCCESS)
+        {
+            RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+            CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                              "RADIO: RADIO_ReceiveData failed, status=%d", (int)recv_status);
+            break;
+        }
 
         /* Advance the buffer length, but guard against overflow */
         RADIO_AppData.ReceiveBuffLength += actual_length;
@@ -790,7 +801,34 @@ void RADIO_ServiceUplink(void)
                     /* Sanity check frame_len */
                     if (frame_len < 5)
                     {
-                        /* Invalid length in header - drop rest */
+                        /* Dump the offending header bytes to help diagnose misalignment/padding */
+                        OS_printf("RADIO_Service: Invalid TF length parsed (%u) at offset %u, header bytes: %02X %02X %02X %02X\n",
+                                  (unsigned)frame_len, (unsigned)offset, cur[0], cur[1], cur[2], cur[3]);
+
+                        /* Try to resynchronize: scan forward to find a plausible TF header instead of dropping entire buffer */
+                        uint32_t new_offset = offset + 1;
+                        uint8_t *base = RADIO_AppData.ReceiveBuffer;
+                        int found = 0;
+                        for (; new_offset + 5 <= buf_len; ++new_offset)
+                        {
+                            uint8_t *probe = base + new_offset;
+                            uint16_t pfl = (uint16_t)((probe[2] & 0x03) << 8) | (uint16_t)probe[3];
+                            uint32_t pframe_len = (uint32_t)pfl + 1U;
+                            if (pframe_len >= 5 && new_offset + pframe_len <= buf_len)
+                            {
+                                found = 1;
+                                break;
+                            }
+                        }
+
+                        if (found)
+                        {
+                            OS_printf("RADIO_Service: Resynced: skipping %u bytes, new offset=%u\n", (unsigned)(new_offset - offset), (unsigned)new_offset);
+                            offset = new_offset;
+                            continue; /* re-evaluate at new offset */
+                        }
+
+                        /* If resync failed, drop the buffer as before */
                         CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
                                           "RADIO: Invalid TF length parsed (%u) at offset %u, dropping buffer", (unsigned)frame_len, (unsigned)offset);
                         offset = buf_len; /* force exit */
@@ -913,8 +951,8 @@ void RADIO_ServiceUplink(void)
                 }
             }
         }
-        /* After processing, reset buffer for next transaction */
-        RADIO_AppData.ReceiveBuffLength = 0;
+    /* After processing, do not reset ReceiveBuffLength here - it is managed above when preserving partial bytes
+     * Leaving it intact ensures partial frames are preserved across polls. */
 
         /* Decrement receive attempts and continue to try to read more packets */
         max_rx_transactions--;
