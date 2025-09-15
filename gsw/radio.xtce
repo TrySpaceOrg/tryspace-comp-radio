@@ -70,10 +70,15 @@
   </xtce:TelemetryMetaData>
   <xtce:CommandMetaData>
     <xtce:ArgumentTypeSet>
-      <xtce:IntegerArgumentType name="MODE_Type" initialValue="0" shortDescription="Radio Mode (0=Sleep,1=TX,2=RX,3=Duplex)" signed="false">
+      <xtce:EnumeratedArgumentType name="MODE_Type" initialValue="Duplex Mode" shortDescription="Radio Mode (0=Sleep,1=TX,2=RX,3=Duplex)" signed="false">
         <xtce:IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
-        <xtce:ValidRange minInclusive="0" maxInclusive="3"/>
-      </xtce:IntegerArgumentType>
+        <xtce:EnumerationList>
+          <xtce:Enumeration value="0" label="Sleep Mode"/>
+          <xtce:Enumeration value="1" label="Transmit Only Mode"/>
+          <xtce:Enumeration value="2" label="Receive Only Mode"/>
+          <xtce:Enumeration value="3" label="Duplex Mode"/>
+        </xtce:EnumerationList>
+      </xtce:EnumeratedArgumentType>
       <xtce:IntegerArgumentType name="RX_SPEED_Type" initialValue="0" shortDescription="RX Speed Setting" signed="false">
         <xtce:IntegerDataEncoding sizeInBits="8" encoding="unsigned"/>
       </xtce:IntegerArgumentType>

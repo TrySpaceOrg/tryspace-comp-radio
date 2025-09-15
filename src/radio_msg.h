@@ -35,7 +35,7 @@ typedef struct
 typedef struct
 {
     CFE_MSG_CommandHeader_t CmdHeader;
-    uint16                  DeviceCfg;
+    RADIO_Device_Config_t   DeviceCfg;
 
 } RADIO_Config_cmd_t;
 

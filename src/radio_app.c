@@ -1,27 +1,23 @@
 #include "radio_app.h"
 
 RADIO_AppData_t RADIO_AppData;
-
-/* Downlink subscription table handle and pointer */
 CFE_TBL_Handle_t RADIO_SubsTblHandle;
 RADIO_Subs_t *RADIO_SubsTblPtr = NULL;
-
-/* Downlink pipe */
-#define RADIO_DOWNLINK_PIPE_DEPTH 50
-#define RADIO_DOWNLINK_PIPE_NAME "RADIO_DOWNLINK_PIPE"
 uint32 RADIO_DownlinkPipe;
-
-#define RADIO_TM_FRAME_SIZE 1786
 
 /* Static buffers to avoid stack overflow */
 static uint8 static_tm_frame[RADIO_TM_FRAME_SIZE];
-static uint8 static_tm_overflow[RADIO_TM_FRAME_SIZE];
+static uint8 static_tm_overflow[RADIO_TM_FRAME_SIZE * 4]; /* Overflow buffer */
 static uint8 static_cadu_buffer[RADIO_TM_FRAME_SIZE + TM_SYNC_ASM_SIZE]; /* CADU with ASM space */
 
 /* Persistent TM SDLP configuration */
 static TM_SDLP_GlobalConfig_t radio_global_cfg = {0};
 static TM_SDLP_ChannelConfig_t radio_channel_cfg = {0};
 static TM_SDLP_FrameInfo_t radio_frame_info = {0};
+
+/* Idle packet */
+static uint8 idlePattern[32];
+static CFE_MSG_Message_t *IdlePacket = CFE_MSG_PTR(RADIO_AppData.IdlePacket.TlmHeader);
 
 /*
 ** Application entry point and main process loop
@@ -217,7 +213,7 @@ int32 RADIO_AppInit(void)
     RADIO_AppData.HkTelemetryPkt.DeviceCount      = 0;
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled    = RADIO_DEVICE_DISABLED;
 
-    /* Initialize SPI and GPIO devices (reference radio_cli.c) */
+    /* Initialize SPI and GPIO devices */
     RADIO_AppData.RadioSpi.bus = RADIO_CFG_SPI_BUS;
     RADIO_AppData.RadioSpi.cs = RADIO_CFG_SPI_CS;
     RADIO_AppData.RadioSpi.isOpen = SPI_DEVICE_CLOSED;
@@ -234,28 +230,7 @@ int32 RADIO_AppInit(void)
     memset(RADIO_AppData.ReceiveBuffer, 0, sizeof(RADIO_AppData.ReceiveBuffer));
     RADIO_AppData.ReceiveBuffLength = 0;
 
-    /* Initialize radio device (SPI + GPIO) */
-    status = RADIO_InitDevice(&RADIO_AppData.RadioSpi, &RADIO_AppData.RadioPowerGpio, &RADIO_AppData.RadioInterruptGpio);
-    if (status == OS_SUCCESS)
-    {
-        status = RADIO_PowerOn(&RADIO_AppData.RadioPowerGpio);
-        if (status == OS_SUCCESS)
-        {
-            RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
-        }
-        else
-        {
-            RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-        }
-    }
-    else
-    {
-        RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_DISABLED;
-    }
-
-    OS_TaskDelay(5);
-
-    /* --- Initialize TM SDLP channel once (reuse like TO example) --- */
+    /* Initialize TM SDLP channel */
     radio_global_cfg.scId = 0x0003; /* Spacecraft ID */
     radio_global_cfg.frameLength = RADIO_TM_FRAME_SIZE;
     radio_global_cfg.hasErrCtrl = 0;
@@ -285,8 +260,14 @@ int32 RADIO_AppInit(void)
     {
         CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
                           "RADIO: TM_SDLP_InitChannel failed in init, status=%d", (int)status);
-        /* continue, ServiceDownlink will report errors when used */
+        /* Continue, ServiceDownlink will report errors when used */
     }
+
+    /* Initialize Idle pattern as pseudo-random sequence. */
+    IO_LIB_UTIL_GenPseudoRandomSeq(&idlePattern[0], 0xa9, 0xff);
+
+    /* Initialize Idle packet with repeating idle pattern */
+    TM_SDLP_InitIdlePacket(IdlePacket, &idlePattern[0], RADIO_TM_FRAME_SIZE, 255);
 
     /*
      ** Send an information event that the app has initialized.
@@ -430,7 +411,6 @@ void RADIO_ProcessGroundCommand(void)
 
         /*
         ** Set Configuration Command
-        ** Note that this is an example of a command that has additional arguments
         */
         case RADIO_CONFIG_CC:
             if (RADIO_VerifyCmdLength(RADIO_AppData.MsgPtr, sizeof(RADIO_Config_cmd_t)) == OS_SUCCESS)
@@ -718,7 +698,7 @@ void RADIO_Configure(void)
     }
 
     /* Do any necessary checks, confirm valid configuration value */
-    if (config_cmd->DeviceCfg == 65535)
+    if (config_cmd->DeviceCfg.Mode > RADIO_MODE_DUPLEX)
     {
         status = OS_ERROR;
         /* Increment command error count */
@@ -726,7 +706,7 @@ void RADIO_Configure(void)
 
         /* Send event logging failure of check to the console */
         CFE_EVS_SendEvent(RADIO_CMD_CONFIG_VAL_ERR_EID, CFE_EVS_EventType_ERROR,
-                          "RADIO: Configuration command with value %u is invalid", config_cmd->DeviceCfg);
+                          "RADIO: Configuration command with mode %u is invalid", config_cmd->DeviceCfg.Mode);
     }
 
     if (status == OS_SUCCESS)
@@ -735,7 +715,7 @@ void RADIO_Configure(void)
         RADIO_AppData.HkTelemetryPkt.CommandCount++;
 
         /* Do the action, command device with new configuration using SPI */
-        device_status = RADIO_SetConfiguration(&RADIO_AppData.RadioSpi, (RADIO_Device_Config_t *)config_cmd);
+        device_status = RADIO_SetConfiguration(&RADIO_AppData.RadioSpi, &config_cmd->DeviceCfg);
         if (device_status == OS_SUCCESS)
         {
             /* Increment device success counter */
@@ -770,8 +750,19 @@ void RADIO_ServiceUplink(void)
     while (max_rx_transactions > 0)
     {
         /* Receive data from the radio into the tail of the buffer */
-        RADIO_ReceiveData(&RADIO_AppData.RadioSpi, RADIO_AppData.ReceiveBuffer + RADIO_AppData.ReceiveBuffLength,
-                        RADIO_MAX_PAYLOAD_SIZE - RADIO_AppData.ReceiveBuffLength, &actual_length);
+        int32 recv_status = RADIO_ReceiveData(&RADIO_AppData.RadioSpi,
+                                             RADIO_AppData.ReceiveBuffer + RADIO_AppData.ReceiveBuffLength,
+                                             RADIO_MAX_PAYLOAD_SIZE - RADIO_AppData.ReceiveBuffLength,
+                                             &actual_length);
+
+        /* If receive failed, record error and stop trying this poll */
+        if (recv_status != OS_SUCCESS)
+        {
+            RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+            CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                              "RADIO: RADIO_ReceiveData failed, status=%d", (int)recv_status);
+            break;
+        }
 
         /* Advance the buffer length, but guard against overflow */
         RADIO_AppData.ReceiveBuffLength += actual_length;
@@ -812,7 +803,34 @@ void RADIO_ServiceUplink(void)
                     /* Sanity check frame_len */
                     if (frame_len < 5)
                     {
-                        /* Invalid length in header - drop rest */
+                        /* Dump the offending header bytes to help diagnose misalignment/padding */
+                        OS_printf("RADIO_Service: Invalid TF length parsed (%u) at offset %u, header bytes: %02X %02X %02X %02X\n",
+                                  (unsigned)frame_len, (unsigned)offset, cur[0], cur[1], cur[2], cur[3]);
+
+                        /* Try to resynchronize: scan forward to find a plausible TF header instead of dropping entire buffer */
+                        uint32_t new_offset = offset + 1;
+                        uint8_t *base = RADIO_AppData.ReceiveBuffer;
+                        int found = 0;
+                        for (; new_offset + 5 <= buf_len; ++new_offset)
+                        {
+                            uint8_t *probe = base + new_offset;
+                            uint16_t pfl = (uint16_t)((probe[2] & 0x03) << 8) | (uint16_t)probe[3];
+                            uint32_t pframe_len = (uint32_t)pfl + 1U;
+                            if (pframe_len >= 5 && new_offset + pframe_len <= buf_len)
+                            {
+                                found = 1;
+                                break;
+                            }
+                        }
+
+                        if (found)
+                        {
+                            OS_printf("RADIO_Service: Resynced: skipping %u bytes, new offset=%u\n", (unsigned)(new_offset - offset), (unsigned)new_offset);
+                            offset = new_offset;
+                            continue; /* re-evaluate at new offset */
+                        }
+
+                        /* If resync failed, drop the buffer as before */
                         CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
                                           "RADIO: Invalid TF length parsed (%u) at offset %u, dropping buffer", (unsigned)frame_len, (unsigned)offset);
                         offset = buf_len; /* force exit */
@@ -935,8 +953,6 @@ void RADIO_ServiceUplink(void)
                 }
             }
         }
-        /* After processing, reset buffer for next transaction */
-        RADIO_AppData.ReceiveBuffLength = 0;
 
         /* Decrement receive attempts and continue to try to read more packets */
         max_rx_transactions--;
@@ -954,16 +970,16 @@ void RADIO_ServiceDownlink(void)
     TM_SDLP_ChannelConfig_t *channel_cfg = &radio_channel_cfg;
     TM_SDLP_FrameInfo_t *frame_info = &radio_frame_info;
     int32 status;
-    uint32 pkt_count = 0;
-    uint32 pkt_debug_count = 0;
+    uint32 pkt_count = 0;    
     CFE_SB_Buffer_t *SBBufPtr;
+    size_t pkt_len = 0;
 
     #ifdef RADIO_CFG_DEBUG
     /* global_cfg/channel_cfg were set during RADIO_AppInit; log active values */
     OS_printf("RADIO_ServiceDownlink: scId = %u, vcId = %u\n", (unsigned)global_cfg->scId, (unsigned)channel_cfg->vcId);
     #endif
 
-    /* If InitChannel failed earlier, try again now */
+    /* Initialize channel and start start if not ready */
     if (!frame_info->isReady) 
     {
         status = TM_SDLP_InitChannel(frame_info, static_tm_frame, static_tm_overflow, global_cfg, channel_cfg);
@@ -974,131 +990,164 @@ void RADIO_ServiceDownlink(void)
                               "RADIO: TM frame init failed, status=%d", (int)status);
             return;
         }
-    }
 
-    status = TM_SDLP_StartFrame(frame_info);
-    if (status != TM_SDLP_SUCCESS) 
-    {
-        RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-        CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
-                          "RADIO: TM frame start failed, status=%d", (int)status);
-        return;
-    }
-
-    /* Add as many packets as will fit into the TM frame */
-    while (pkt_count < RADIO_CFG_MAX_TX_MSGS_PER_POLL) 
-    {
-        CFE_Status_t sb_status = CFE_SB_ReceiveBuffer(&SBBufPtr, RADIO_DownlinkPipe, CFE_SB_POLL);
-        if (sb_status != CFE_SUCCESS || SBBufPtr == NULL) 
-        {
-            break;
-        }
-        int32 add_status = TM_SDLP_AddPacket(frame_info, (CFE_MSG_Message_t *)&SBBufPtr->Msg);
-        if (add_status < 0) 
-        {
-            /* Frame full or error, stop adding */
-            break;
-        }
-        pkt_debug_count++;
-        pkt_count++;
-    }
-
-    /* Check if frame needs idle data filling, similar to to_custom.c */
-    int32 frame_status = TM_SDLP_FrameHasData(frame_info);
-    if (frame_status == 1)
-    {
-        /* Frame has space, could add idle packet here if needed */
-        /* For now, let TM_SDLP_CompleteFrame handle it */
-    }
-
-    /* Finalize the frame (frame count and OCF can be customized if needed) */
-    uint8 mc_frame_cnt = 0;
-    uint8 ocf[4] = {0};
-    status = TM_SDLP_CompleteFrame(frame_info, &mc_frame_cnt, ocf);
-    if (status != TM_SDLP_SUCCESS) 
-    {
-        RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-        CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
-                          "RADIO: TM frame finalize failed, status=%d", (int)status);
-        return;
-    }
-
-    /* Dump the actual frame buffer and length produced by TM SDLP */
-    uint8 *pframe = (uint8 *)frame_info->frame;
-    size_t frame_len = (size_t)global_cfg->frameLength;
-
-    #ifdef RADIO_CFG_DEBUG
-    OS_printf("TM frame ptr=%p len=%u (first 16 bytes): ", (void*)pframe, (unsigned)frame_len);
-    for (int i = 0; i < 16 && i < (int)frame_len; ++i) {
-        OS_printf("%02X ", pframe[i]);
-    }
-    OS_printf("\n");
-    #endif
-
-    /* --- Apply TM frame security using CryptoLib --- */
-    SaInterface sa_if = get_sa_interface_inmemory();
-    SecurityAssociation_t *sa_ptr = NULL;
-    int32 sa_status = -1;
-    if (sa_if && sa_if->sa_get_operational_sa_from_gvcid) 
-    {
-        sa_status = sa_if->sa_get_operational_sa_from_gvcid(0, global_cfg->scId, channel_cfg->vcId, 0, &sa_ptr);
-    }
-    if (sa_status == 0 && sa_ptr != NULL) 
-    {
-        /* Call Crypto on the exact frame and length produced by TM SDLP */
-        int32 sec_status = Crypto_TM_ApplySecurity(pframe, (int32)frame_len);
-        if (sec_status != 0) 
+        status = TM_SDLP_StartFrame(frame_info);
+        if (status != TM_SDLP_SUCCESS) 
         {
             RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
             CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
-                              "RADIO: TM_ApplySecurity failed, status=%d", (int)sec_status);
+                            "RADIO: TM frame start failed, status=%d", (int)status);
+            return;
         }
-    } 
-    else 
-    {
-        RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-        CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
-                          "RADIO: Could not get SecurityAssociation for TM frame");
     }
 
-    /* Synchronize frame into CADU following to_custom.c pattern */
-    /* First copy the TM frame to the CADU buffer after ASM space */
-    memcpy(static_cadu_buffer + TM_SYNC_ASM_SIZE, pframe, frame_len);
-    
-    int32 cadu_size = TM_SYNC_Synchronize(static_cadu_buffer, (char*)TM_SYNC_ASM_STR, 
-                                          (uint8)TM_SYNC_ASM_SIZE,
-                                          (uint16)frame_len, 
-                                          (bool)false);
-    if (cadu_size < 0)
+    /* Process each TM frame */
+    while (pkt_count < RADIO_CFG_MAX_TX_MSGS_PER_POLL)
     {
-        RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-        CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
-                          "RADIO: TM_SYNC_Synchronize failed, status=%d", (int)cadu_size);
-        return;
-    }
 
-    /* Update pointers to use the synchronized CADU buffer */
-    uint8 *final_frame = static_cadu_buffer;
-    size_t final_frame_len = (size_t)cadu_size;
+        /* Process each packet */
+        while (pkt_count < RADIO_CFG_MAX_TX_MSGS_PER_POLL)
+        {
 
-    /* Transmit the TM frame over the radio interface */
-    int32 tx_status = RADIO_SendData(&RADIO_AppData.RadioSpi, final_frame, (int32)final_frame_len);
-    if (tx_status == OS_SUCCESS) 
-    {
-        RADIO_AppData.HkTelemetryPkt.DeviceCount++;
+            if (pkt_len == 0)
+            {
+                /* Read one packet */
+                CFE_Status_t sb_status = CFE_SB_ReceiveBuffer(&SBBufPtr, RADIO_DownlinkPipe, CFE_SB_POLL);
+                if (sb_status != CFE_SUCCESS || SBBufPtr == NULL) 
+                {
+                    /* No more packets available */
+                    pkt_count = RADIO_CFG_MAX_TX_MSGS_PER_POLL;
+                    break;
+                }
+            }
+
+            /* Check frame ready for packet */
+            if (!frame_info->isReady) 
+            {
+                status = TM_SDLP_StartFrame(frame_info);
+                if (status != TM_SDLP_SUCCESS) 
+                {
+                    RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+                    CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                                    "RADIO: TM frame start failed for packet, status=%d", (int)status);
+                    break;
+                }
+            }
+
+            CFE_MSG_GetSize((CFE_MSG_Message_t *)&SBBufPtr->Msg, &pkt_len);
+            if (pkt_len < frame_info->freeOctets)
+            {
+                /* Add this single packet to the frame */
+                int32 add_status = TM_SDLP_AddPacket(frame_info, (CFE_MSG_Message_t *)&SBBufPtr->Msg);
+                if (add_status < 0) 
+                {
+                    RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+                    CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                                    "RADIO: Failed to add packet to TM frame, status=%d", (int)add_status);
+                    break;
+                }
+                else
+                {
+                    pkt_len = 0;
+                }
+                pkt_count++;
+            }
+            else
+            {
+                /* Packet too large to fit in frame, leave for next frame */
+                break;
+            }
+        }
+
+        /* Add idle packet to fill remaining free space */
+        TM_SDLP_AddIdlePacket(frame_info, IdlePacket);
+
+        /* Finalize the frame (frame count and OCF can be customized if needed) */
+        uint8 mc_frame_cnt = 0;
+        uint8 ocf[4] = {0};
+        status = TM_SDLP_CompleteFrame(frame_info, &mc_frame_cnt, ocf);
+        if (status != TM_SDLP_SUCCESS) 
+        {
+            RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+            CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                            "RADIO: TM frame finalize failed, status=%d", (int)status);
+            return;
+        }
+
+        uint8 *pframe = (uint8 *)frame_info->frame;
+        size_t frame_len = (size_t)global_cfg->frameLength;
         #ifdef RADIO_CFG_DEBUG
-        OS_printf("RADIO_Service: Downlink TM frame transmitted, packets: %u\n", pkt_debug_count);
+        OS_printf("TM frame completed for packet %u, ptr=%p len=%u: 0x", pkt_count, (void*)pframe, (unsigned)frame_len);
+        for (int i = 0; i < (int)frame_len && i < 32; ++i) {
+            OS_printf("%02X", pframe[i]);
+        }
+        if (frame_len > 32) OS_printf("...");
+        OS_printf("\n");
         #endif
-    } 
-    else 
-    {
-        RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
-        CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
-                          "RADIO: Failed to transmit TM frame, status=%d", (int)tx_status);
+
+        /* Apply TM frame security using CryptoLib */
+        SaInterface sa_if = get_sa_interface_inmemory();
+        SecurityAssociation_t *sa_ptr = NULL;
+        int32 sa_status = -1;
+        if (sa_if && sa_if->sa_get_operational_sa_from_gvcid) 
+        {
+            sa_status = sa_if->sa_get_operational_sa_from_gvcid(0, global_cfg->scId, channel_cfg->vcId, 0, &sa_ptr);
+        }
+        if (sa_status == 0 && sa_ptr != NULL) 
+        {
+            /* Call Crypto on the exact frame and length produced by TM SDLP */
+            int32 sec_status = Crypto_TM_ApplySecurity(pframe, (int32)frame_len);
+            if (sec_status != 0) 
+            {
+                RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+                CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                                "RADIO: TM_ApplySecurity failed, status=%d", (int)sec_status);
+            }
+        } 
+        else 
+        {
+            RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+            CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                            "RADIO: Could not get SecurityAssociation for TM frame");
+        }
+
+        /* Copy the TM frame to the CADU buffer after ASM space */
+        memcpy(static_cadu_buffer + TM_SYNC_ASM_SIZE, pframe, frame_len);
+        
+        int32 cadu_size = TM_SYNC_Synchronize(static_cadu_buffer, (char*)TM_SYNC_ASM_STR, 
+                                            (uint8)TM_SYNC_ASM_SIZE,
+                                            (uint16)frame_len, 
+                                            (bool)false);
+        if (cadu_size < 0)
+        {
+            RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+            CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                            "RADIO: TM_SYNC_Synchronize failed, status=%d", (int)cadu_size);
+            return;
+        }
+
+        /* Update pointers to use the synchronized CADU buffer */
+        uint8 *final_frame = static_cadu_buffer;
+        size_t final_frame_len = (size_t)cadu_size;
+
+        #ifdef RADIO_CFG_DEBUG
+        OS_printf("RADIO: Packet %u - Original frame_len=%d, CADU size=%d, transmitting final_frame_len=%d\n", 
+                pkt_count, (int)frame_len, (int)cadu_size, (int)final_frame_len);
+        #endif
+
+        /* Transmit the TM frame over the radio interface */
+        int32 tx_status = RADIO_SendData(&RADIO_AppData.RadioSpi, final_frame, (int32)final_frame_len);
+        if (tx_status == OS_SUCCESS) 
+        {
+            RADIO_AppData.HkTelemetryPkt.DeviceCount++;
+        } 
+        else 
+        {
+            RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
+            CFE_EVS_SendEvent(RADIO_REQ_DATA_ERR_EID, CFE_EVS_EventType_ERROR,
+                            "RADIO: Failed to transmit TM frame, status=%d", (int)tx_status);
+        }
     }
-    #ifdef RADIO_CFG_DEBUG
-    OS_printf("RADIO_Service: Downlink packets processed this call: %u\n", pkt_debug_count);
-    #endif
 }
 
 /*
@@ -1106,10 +1155,30 @@ void RADIO_ServiceDownlink(void)
 */
 void RADIO_Service(void)
 {
-    if (RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED)
+    CFE_SB_Buffer_t *discard_buf = NULL;
+    
+    /* Service uplink if enabled and in correct mode */
+    if  ((RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED) &&
+            (RADIO_AppData.HkTelemetryPkt.DeviceHK.Mode == RADIO_MODE_RX ||
+            RADIO_AppData.HkTelemetryPkt.DeviceHK.Mode == RADIO_MODE_DUPLEX))
     {
         RADIO_ServiceUplink();
+    }
+
+    /* Service downlink if enabled and in correct mode */
+    if  ((RADIO_AppData.HkTelemetryPkt.DeviceEnabled == RADIO_DEVICE_ENABLED) &&
+         (RADIO_AppData.HkTelemetryPkt.DeviceHK.Mode == RADIO_MODE_TX ||
+          RADIO_AppData.HkTelemetryPkt.DeviceHK.Mode == RADIO_MODE_DUPLEX))
+    {
         RADIO_ServiceDownlink();
+    }
+    else
+    {
+        /* Clear the downlink pipe by reading and discarding all messages */
+        while (CFE_SB_ReceiveBuffer(&discard_buf, RADIO_DownlinkPipe, CFE_SB_POLL) == CFE_SUCCESS)
+        {
+            /* Discard the message */
+        }
     }
     return;
 }

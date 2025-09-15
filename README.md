@@ -73,8 +73,7 @@ Two message IDs exist for commands:
   * (2) Enable
   * (3) Disable
   * (4) Set configuration
-  * (4) Send packet (FSW supplies packet buffer index)
-  * (5) Set configuration
+  * (5) Service uplink/downlink
 * 0x18D3 - Requests
   * (0) Request housekeeping
   * (1) Service radio (send/receive data)

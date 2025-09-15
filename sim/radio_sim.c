@@ -18,7 +18,7 @@ static void* udp_ground_thread(void* arg)
     radio_sim_state_t* state = (radio_sim_state_t*)arg;
     fd_set read_fds;
     struct timeval timeout;
-    uint8_t buffer[1024];
+    uint8_t buffer[8192];
     size_t bytes_received;
     struct sockaddr_in from_addr;
     socklen_t from_len;
@@ -308,6 +308,12 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
                 state->hk.RxWavelengthSetting = state->config.RxWavelengthSetting;
                 state->hk.TxSpeedSetting = state->config.TxSpeedSetting;
                 state->hk.TxWavelengthSetting = state->config.TxWavelengthSetting;
+                
+                #ifdef RADIO_CFG_DEBUG
+                printf("Radio sim: SET_CFG_CMD - Mode=%d, RxSpeed=%d, RxWavelength=%d, TxSpeed=%d, TxWavelength=%d\n",
+                       state->config.Mode, state->config.RxSpeedSetting, state->config.RxWavelengthSetting,
+                       state->config.TxSpeedSetting, state->config.TxWavelengthSetting);
+                #endif
             }
             else
             {
@@ -397,10 +403,12 @@ static void radio_sim_handle_spi_command(radio_sim_state_t* state, const uint8_t
                         printf("Failed to send to ground station: %s\n", strerror(errno));
                     }
                 }
+                #ifdef RADIO_CFG_DEBUG
                 else
                 {
                     printf("Radio not in TX mode - dropping data\n");
                 }
+                #endif
             }
             break;
 

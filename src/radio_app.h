@@ -17,6 +17,7 @@
 
 #include "cryptolib.h"
 #include "io_lib.h"
+#include "io_lib_utils.h"
 #include "sa_interface.h"
 #include "tc_sync.h"
 #include "tctf.h"
@@ -35,6 +36,18 @@
 */
 #define RADIO_DEVICE_DISABLED 0
 #define RADIO_DEVICE_ENABLED  1
+
+#define RADIO_DOWNLINK_PIPE_DEPTH 50
+#define RADIO_DOWNLINK_PIPE_NAME "RADIO_DOWNLINK_PIPE"
+
+#define RADIO_TM_FRAME_SIZE 1786
+
+/* RADIO idle packet */
+typedef struct
+{
+    CFE_MSG_TelemetryHeader_t TlmHeader;
+    uint8  Pattern[RADIO_TM_FRAME_SIZE]; /* Idle pattern, up to 32 bytes */
+} RADIO_IdlePacket_t;
 
 /*
 ** RADIO global data structure
@@ -69,6 +82,11 @@ typedef struct
     */
     uint8_t ReceiveBuffer[1024]; /* Buffer for receiving data */
     uint16_t ReceiveBuffLength;  /* Length of data in receive buffer */
+
+    /*
+    ** Idle packet
+    */
+    RADIO_IdlePacket_t IdlePacket; /* Idle packet structure */
 
 } RADIO_AppData_t;
 

@@ -556,17 +556,24 @@ void Test_RADIO_VerifyCmdLength(void)
 
 void Test_RADIO_Configure(void)
 {
+    /* Call with no message pointer to exercise early exit path */
     RADIO_Configure();
 
+    /* Prepare a command buffer and point MsgPtr at it */
     RADIO_Config_cmd_t command;
-    RADIO_AppData.MsgPtr                                     = (CFE_MSG_Message_t *)&command;
-    ((RADIO_Config_cmd_t *)RADIO_AppData.MsgPtr)->DeviceCfg = 0xFFFF;
+    memset(&command, 0, sizeof(command));
+    RADIO_AppData.MsgPtr = (CFE_MSG_Message_t *)&command;
+
+    /* Set an invalid mode value (greater than RADIO_MODE_DUPLEX) to exercise validation error */
+    ((RADIO_Config_cmd_t *)RADIO_AppData.MsgPtr)->DeviceCfg.Mode = 0xFF;
     RADIO_Configure();
 
-    ((RADIO_Config_cmd_t *)RADIO_AppData.MsgPtr)->DeviceCfg = 0x0;
-    RADIO_AppData.HkTelemetryPkt.DeviceEnabled               = RADIO_DEVICE_ENABLED;
+    /* Now set a valid mode and mark device enabled so the configuration path is taken */
+    ((RADIO_Config_cmd_t *)RADIO_AppData.MsgPtr)->DeviceCfg.Mode = RADIO_MODE_SLEEP;
+    RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
     RADIO_Configure();
 
+    /* Simulate device command failure during SetConfiguration */
     UT_SetDeferredRetcode(UT_KEY(RADIO_CommandDevice), 1, OS_ERROR);
     RADIO_AppData.HkTelemetryPkt.DeviceEnabled = RADIO_DEVICE_ENABLED;
     RADIO_Configure();
