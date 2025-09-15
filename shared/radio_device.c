@@ -130,8 +130,8 @@ int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint16_t payload_le
     /* Build command packet */
     tx_buffer[0] = RADIO_DEVICE_HDR;          /* Header byte */
     tx_buffer[1] = cmd;                       /* Command */
-    tx_buffer[2] = (payload_len >> 8) & 0xFF; /* Payload length high byte */
-    tx_buffer[3] = payload_len & 0xFF;        /* Payload length low byte */
+    tx_buffer[2] = (uint8_t)((payload_len >> 8) & 0xFF); /* Payload length high byte */
+    tx_buffer[3] = (uint8_t)(payload_len & 0xFF);        /* Payload length low byte */
     
     /* Copy payload if provided */
     if (payload_len > 0 && payload != NULL)
@@ -155,8 +155,8 @@ int32_t RADIO_CommandDevice(spi_info_t *device, uint8_t cmd, uint16_t payload_le
     #endif
     
     /* Perform SPI transaction */
-    status = spi_write(device, tx_buffer, total_len);
-    if (status != total_len)
+    status = spi_write(device, tx_buffer, (uint32_t)total_len);
+    if (status != (int32_t)total_len)
     {
         OS_printf("RADIO_CommandDevice: SPI transaction failed with error %d\n", status);
         return OS_ERROR;
@@ -302,8 +302,8 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint16_t max_length
     }
     
     /* Build receive request payload (number of bytes to receive, uint16 big-endian) */
-    payload[0] = (max_length >> 8) & 0xFF;
-    payload[1] = max_length & 0xFF;
+    payload[0] = (uint8_t)((max_length >> 8) & 0xFF);
+    payload[1] = (uint8_t)(max_length & 0xFF);
     
     /* Send receive command (payload_len=2) */
     status = RADIO_CommandDevice(device, RADIO_DEVICE_RECEIVE_CMD, 2, payload);
@@ -315,7 +315,7 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint16_t max_length
     OS_printf("RADIO_ReceiveData: Requesting SPI read of %u bytes\n", max_length);
     #endif
     /* Read entire response in a single call. The simulator may pad with zeros up to max_length. */
-    status = spi_read(device, rx_buffer, max_length + 4); /* header(1)+len(2)+payload+trailer(1) */
+    status = spi_read(device, rx_buffer, (uint32_t)(max_length + 4)); /* header(1)+len(2)+payload+trailer(1) */
     if (status <= 0)
     {
         OS_printf("RADIO_ReceiveData: SPI read failed with error %d\n", status);
@@ -339,7 +339,7 @@ int32_t RADIO_ReceiveData(spi_info_t *device, uint8_t *data, uint16_t max_length
     }
 
     /* Get payload length from response (second and third byte, big-endian) */
-    response_len = ((uint16_t)rx_buffer[1] << 8) | rx_buffer[2];
+    response_len = ((uint16_t)rx_buffer[1] << 8) | (uint16_t)rx_buffer[2];
 
     /* Ensure payload length is within requested maximum */
     if (response_len > max_length)
