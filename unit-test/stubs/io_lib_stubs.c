@@ -112,3 +112,34 @@ int32 TM_SYNC_Synchronize(uint8* cadu_buffer, char* asm_pattern, uint8 asm_size,
         
     return UT_TM_SYNC_Synchronize_ReturnValue;
 }
+
+/* Generate a deterministic pseudo-random sequence into buffer for tests.
+ * Keep it simple and deterministic so tests are repeatable.
+ */
+void IO_LIB_UTIL_GenPseudoRandomSeq(uint8_t *buf, uint8_t seed, uint8_t len)
+{
+    if (!buf) return;
+    for (uint32_t i = 0; i < (uint32_t)len; ++i)
+    {
+        buf[i] = (uint8_t)(seed + (uint8_t)i);
+    }
+}
+
+/* Idle packet helpers used by radio_app. In unit tests we don't need
+ * full SDLP behavior, so provide no-op implementations that preserve
+ * the expected symbol names for linking.
+ */
+void TM_SDLP_InitIdlePacket(void *IdlePacket, uint8_t *pattern, uint32_t frameSize, uint8_t repeat)
+{
+    (void)IdlePacket;
+    (void)pattern;
+    (void)frameSize;
+    (void)repeat;
+}
+
+void TM_SDLP_AddIdlePacket(void *frame_info, void *IdlePacket)
+{
+    (void)frame_info;
+    (void)IdlePacket;
+}
+
