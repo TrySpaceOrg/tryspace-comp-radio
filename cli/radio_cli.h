@@ -61,11 +61,8 @@
 */
 void print_help(void);
 int  get_command(const char *str);
+int  process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_INPUT_TOKEN_SIZE]);
 int  main(int argc, char *argv[]);
-
-/*
-** Generic Prototypes
-*/
 int  check_number_arguments(int actual, int expected);
 void to_lower(char *str);
 

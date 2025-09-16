@@ -890,7 +890,7 @@ void RADIO_ServiceUplink(void)
                         #endif
 
                         /* Look for valid CCSDS Space Packets in the processed payload */
-                        for (uint16 scan_offset = 0; scan_offset <= crypto_tc_frame.tc_pdu_len && (crypto_tc_frame.tc_pdu_len - scan_offset) >= 6; scan_offset++)
+                        for (uint32_t scan_offset = 0; scan_offset <= crypto_tc_frame.tc_pdu_len && (crypto_tc_frame.tc_pdu_len - scan_offset) >= 6; scan_offset++)
                         {
                             uint8 *potential_packet = crypto_tc_frame.tc_pdu + scan_offset;
                             uint16 packet_id = (potential_packet[0] << 8) | potential_packet[1];
@@ -945,7 +945,7 @@ void RADIO_ServiceUplink(void)
                 {
                     uint32_t remaining = buf_len - offset;
                     memmove(RADIO_AppData.ReceiveBuffer, RADIO_AppData.ReceiveBuffer + offset, remaining);
-                    RADIO_AppData.ReceiveBuffLength = remaining;
+                    RADIO_AppData.ReceiveBuffLength = (uint16_t)remaining;
                 }
                 else
                 {
@@ -1064,8 +1064,8 @@ void RADIO_ServiceDownlink(void)
 
         /* Finalize the frame (frame count and OCF can be customized if needed) */
         uint8 mc_frame_cnt = 0;
-        uint8 ocf[4] = {0};
-        status = TM_SDLP_CompleteFrame(frame_info, &mc_frame_cnt, ocf);
+        uint8 ocf_local[4] = {0};
+        status = TM_SDLP_CompleteFrame(frame_info, &mc_frame_cnt, ocf_local);
         if (status != TM_SDLP_SUCCESS) 
         {
             RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
@@ -1086,17 +1086,17 @@ void RADIO_ServiceDownlink(void)
         #endif
 
         /* Apply TM frame security using CryptoLib */
-        SaInterface sa_if = get_sa_interface_inmemory();
+        SaInterface sa_if_local = get_sa_interface_inmemory();
         SecurityAssociation_t *sa_ptr = NULL;
         int32 sa_status = -1;
-        if (sa_if && sa_if->sa_get_operational_sa_from_gvcid) 
+        if (sa_if_local && sa_if_local->sa_get_operational_sa_from_gvcid) 
         {
-            sa_status = sa_if->sa_get_operational_sa_from_gvcid(0, global_cfg->scId, channel_cfg->vcId, 0, &sa_ptr);
+            sa_status = sa_if_local->sa_get_operational_sa_from_gvcid(0, global_cfg->scId, channel_cfg->vcId, 0, &sa_ptr);
         }
         if (sa_status == 0 && sa_ptr != NULL) 
         {
             /* Call Crypto on the exact frame and length produced by TM SDLP */
-            int32 sec_status = Crypto_TM_ApplySecurity(pframe, (int32)frame_len);
+            int32 sec_status = Crypto_TM_ApplySecurity(pframe, (uint16_t)frame_len);
             if (sec_status != 0) 
             {
                 RADIO_AppData.HkTelemetryPkt.DeviceErrorCount++;
@@ -1136,7 +1136,7 @@ void RADIO_ServiceDownlink(void)
         #endif
 
         /* Transmit the TM frame over the radio interface */
-        int32 tx_status = RADIO_SendData(&RADIO_AppData.RadioSpi, final_frame, (int32)final_frame_len);
+        int32 tx_status = RADIO_SendData(&RADIO_AppData.RadioSpi, final_frame, (uint16_t)final_frame_len);
         if (tx_status == OS_SUCCESS) 
         {
             RADIO_AppData.HkTelemetryPkt.DeviceCount++;

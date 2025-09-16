@@ -50,7 +50,7 @@ void print_help(void)
 int get_command(const char *str)
 {
     int  status = CMD_UNKNOWN;
-    char lcmd[MAX_INPUT_TOKEN_SIZE];
+    char lcmd[MAX_INPUT_TOKEN_SIZE + 1];
     strncpy(lcmd, str, MAX_INPUT_TOKEN_SIZE);
 
     /* Convert command to lower case */
@@ -188,12 +188,12 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
         case CMD_CFG:
             if (check_number_arguments(num_tokens, 5) == OS_SUCCESS)
             {
-                RadioConfig.Mode = atoi(tokens[0]);
-                RadioConfig.RxSpeedSetting = atoi(tokens[1]);
-                RadioConfig.RxWavelengthSetting = atoi(tokens[2]);
-                RadioConfig.TxSpeedSetting = atoi(tokens[3]);
-                RadioConfig.TxWavelengthSetting = atoi(tokens[4]);
-                
+                RadioConfig.Mode = (uint8_t) atoi(tokens[0]);
+                RadioConfig.RxSpeedSetting = (uint8_t) atoi(tokens[1]);
+                RadioConfig.RxWavelengthSetting = (uint8_t) atoi(tokens[2]);
+                RadioConfig.TxSpeedSetting = (uint8_t) atoi(tokens[3]);
+                RadioConfig.TxWavelengthSetting = (uint8_t) atoi(tokens[4]);
+
                 status = RADIO_SetConfiguration(&RadioSpi, &RadioConfig);
                 if (status == OS_SUCCESS)
                 {
@@ -215,7 +215,7 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
                 /* Copy string data to send buffer */
                 strncpy((char*)send_data, tokens[0], RADIO_MAX_PAYLOAD_SIZE-1);
                 send_data[RADIO_MAX_PAYLOAD_SIZE-1] = '\0';
-                
+
                 status = RADIO_SendData(&RadioSpi, send_data, (uint16_t)strlen((char*)send_data));
                 if (status == OS_SUCCESS)
                 {
@@ -232,7 +232,7 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
             max_length = 64; /* Default */
             if (num_tokens == 1)
             {
-                max_length = atoi(tokens[0]);
+                max_length = (uint16_t) atoi(tokens[0]);
                 if (max_length > RADIO_MAX_PAYLOAD_SIZE)
                 {
                     max_length = RADIO_MAX_PAYLOAD_SIZE;
@@ -243,7 +243,7 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
                 OS_printf("Invalid command format, type 'help' for more info\n");
                 break;
             }
-            
+
             status = RADIO_ReceiveData(&RadioSpi, recv_data, max_length, &actual_length);
             if (status == OS_SUCCESS)
             {
@@ -305,7 +305,7 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
             OS_printf("Invalid command format, type 'help' for more info\n");
             break;
     }
-    
+
     /* Check interrupt status after each command */
     if (RADIO_CheckInterrupt(&RadioInterruptGpio, &interrupt_status) == OS_SUCCESS)
     {
@@ -314,7 +314,7 @@ int process_command(int cc, int num_tokens, char tokens[MAX_INPUT_TOKENS][MAX_IN
             OS_printf("*** INTERRUPT ACTIVE ***\n");
         }
     }
-    
+
     return exit_status;
 }
 
@@ -326,7 +326,7 @@ int main(int argc, char *argv[])
     int     num_input_tokens;
     int     cmd;
     char   *token_ptr;
-    uint8_t run_status = OS_SUCCESS;
+    int     run_status = OS_SUCCESS;
 
     /* Initialize SPI device */
     RadioSpi.bus = RADIO_CFG_SPI_BUS;
@@ -340,7 +340,6 @@ int main(int argc, char *argv[])
 
     RadioInterruptGpio.pin = RADIO_CFG_GPIO_INTERRUPT_PIN;
     RadioInterruptGpio.direction = GPIO_INPUT;
-    RadioInterruptGpio.isOpen = GPIO_CLOSED;
 
     OS_printf("Delay for device initialization...\n");
     sleep(3);
@@ -379,7 +378,13 @@ int main(int argc, char *argv[])
 
         /* Read user input */
         printf(PROMPT);
-        fgets(input_buf, MAX_INPUT_BUF, stdin);
+        if (fgets(input_buf, MAX_INPUT_BUF, stdin) == NULL)
+        {
+            /* EOF or error on stdin - exit the loop */
+            OS_printf("End of input or read error, exiting...\n");
+            run_status = OS_ERROR;
+            break;
+        }
 
         /* Tokenize line buffer */
         token_ptr = strtok(input_buf, " \t\n");
@@ -416,7 +421,6 @@ int main(int argc, char *argv[])
     if (RadioPowerGpio.isOpen == GPIO_OPEN)
     {
         RADIO_PowerOff(&RadioPowerGpio);
-        gpio_close(&RadioPowerGpio);
         RadioPowerGpio.isOpen = GPIO_CLOSED;
     }
     
@@ -448,7 +452,7 @@ void to_lower(char *str)
     char *ptr = str;
     while (*ptr)
     {
-        *ptr = tolower((unsigned char)*ptr);
+        *ptr = (char) tolower((unsigned char)*ptr);
         ptr++;
     }
     return;
