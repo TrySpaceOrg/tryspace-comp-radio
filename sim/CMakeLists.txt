@@ -13,11 +13,11 @@ if(NOT EXISTS "${SIMULITH_DIR}/include/simulith_transport.h")
     message(FATAL_ERROR "Could not find simulith_transport.h in ${SIMULITH_DIR}/include. Please set SIMULITH_DIR to the correct path.")
 endif()
 
-# Prefer a pre-built simulith static library if present in the simulith build dir.
-set(SIMULITH_BUILD_LIB "${SIMULITH_DIR}/build/libsimulith.a")
+# Prefer a pre-built simulith shared library if present in the simulith build dir.
+set(SIMULITH_BUILD_LIB "${SIMULITH_DIR}/build/libsimulith.so")
 if(EXISTS "${SIMULITH_BUILD_LIB}")
     message(STATUS "Using prebuilt simulith: ${SIMULITH_BUILD_LIB}")
-    add_library(simulith STATIC IMPORTED)
+    add_library(simulith SHARED IMPORTED)
     set_target_properties(simulith PROPERTIES IMPORTED_LOCATION "${SIMULITH_BUILD_LIB}")
 else()
     # Only add Simulith subdirectory if not already added
