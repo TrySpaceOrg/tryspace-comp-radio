@@ -15,11 +15,11 @@ JOBS := $(shell if [ $(NPROC) -le 1 ]; then echo 1; else expr $(NPROC) - 1; fi)
 all: build
 
 build:
-	docker run --rm -it -v $(TRYLABDIR):$(TRYLABDIR) --name $(RUNTIME_NAME) -w $(CURDIR) --user $(shell id -u):$(shell id -g) $(BUILD_IMAGE) make -j$(JOBS) build-sim
+	docker run --rm -it -v $(TRYLABDIR):$(TRYLABDIR) --name $(RUNTIME_NAME) -w $(CURDIR) --user $(shell id -u):$(shell id -g) -e BUILDDIR=$(BUILDDIR) $(BUILD_IMAGE) make -j$(JOBS) build-sim
 
 build-sim:
 	mkdir -p $(BUILDDIR)
-	cd $(BUILDDIR) && cmake ..
+	cd $(BUILDDIR) && cmake $(CURDIR)
 	$(MAKE) --no-print-directory -C $(BUILDDIR)
 
 clean:

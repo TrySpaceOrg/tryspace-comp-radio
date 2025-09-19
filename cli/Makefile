@@ -16,11 +16,11 @@ JOBS := $(shell if [ $(NPROC) -le 1 ]; then echo 1; else expr $(NPROC) - 1; fi)
 all: build
 
 build:
-	docker run --rm -it -v $(TRYLABDIR):$(TRYLABDIR) --name $(RUNTIME_NAME) -w $(CURDIR) $(BUILD_IMAGE) make -j$(JOBS) build-cli
+	docker run --rm -it -v $(TRYLABDIR):$(TRYLABDIR) --name $(RUNTIME_NAME) -w $(CURDIR) -e BUILDDIR=$(BUILDDIR) $(BUILD_IMAGE) make -j$(JOBS) build-cli
 
 build-cli:
 	mkdir -p $(BUILDDIR)
-	cd $(BUILDDIR) && cmake .. -DTGTNAME=$(TGTNAME)
+	cd $(BUILDDIR) && cmake $(CURDIR) -DTGTNAME=$(TGTNAME)
 	$(MAKE) --no-print-directory -C $(BUILDDIR)
 
 clean:
